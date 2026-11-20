@@ -74,7 +74,6 @@ def test_an_alias_wakes_like_the_name():
     ("Okay, go ahead.", True),
     ("Sure, do it please", True),
     ("Yes, go ahead and submit it", None),
-    ("Yes yes yes yes yes yes", None),
     ("I'm not sure", None),
     ("Not sure.", None),
     ("That's not correct", None),
@@ -106,7 +105,7 @@ def test_an_alias_wakes_like_the_name():
     ("Never mind.", False),
     ("No. 5", False),
 ])
-def test_parse_yes_no_needs_a_short_answer_of_yes_words_only_and_lets_no_win(transcript, verdict):
+def test_parse_yes_no_needs_an_answer_of_yes_words_only_and_lets_no_win(transcript, verdict):
     assert parse_yes_no(transcript) is verdict, f"{transcript!r} gave {parse_yes_no(transcript)!r}"
 
 
@@ -173,6 +172,8 @@ def test_is_stop_only_when_the_whole_utterance_says_stop(transcript, stops):
     ("Thank you Jarvis", True),
     ("Never mind, Jervis.", True),
     ("Hey Jarvis, stop!", True),
+    ("Hey Jarvis, thanks.", True),
+    ("Hey Jarvis, that's all.", True),
     ("Jarvis", False),
     ("Hey Jarvis.", False),
     ("Hey Jarvis, stop the video", False),
@@ -226,6 +227,19 @@ def test_a_stop_right_after_a_command_takes_it_back_instead_of_joining_it():
 
     whole = asyncio.run(main.hear_whole(SimpleNamespace(hear=hear), "delete all of my emails"))
     assert is_dismissal(whole), f"hear_whole returned {whole!r}, which would be run as a command"
+
+
+@pytest.mark.parametrize("answer", ["Stop.", "Stop, Jarvis.", "Jarvis, cancel that.", "Hey Jarvis, stop!"])
+def test_a_stop_as_the_answer_to_a_question_ends_the_task_with_or_without_the_name(answer):
+    async def say(text: str) -> None:
+        pass
+
+    async def hear(timeout: float) -> str:
+        return answer
+
+    with pytest.raises(asyncio.CancelledError):
+        returned = asyncio.run(main.ask(SimpleNamespace(say=say, hear=hear), QUESTION, NAMES))
+        print(f"{answer!r} was handed to the model as the answer {returned!r}")
 
 
 def test_the_longest_answer_the_prompt_allows_is_spoken_before_say_is_killed():
@@ -456,16 +470,16 @@ def test_half_a_sentence_before_a_question_goes_to_the_watcher_not_into_the_answ
 def test_confirm_approves_only_on_a_spoken_yes(ears, run, user_replies, monkeypatch, replies, approved, expected_spoken):
     monkeypatch.setattr(main, "CONFIRM_SECONDS", SHORT_CONFIRM_SECONDS)
     spoken = user_replies(replies)
-    verdict = run(main.confirm(ears, QUESTION))
+    verdict = run(main.confirm(ears, QUESTION, NAMES))
     assert verdict is approved, f"confirm returned {verdict!r} after saying {spoken}"
     assert spoken == expected_spoken, f"said {spoken}"
 
 
-@pytest.mark.parametrize("clip", ["stop", "nostop"])
+@pytest.mark.parametrize("clip", ["stop", "nostop", "wakestop"])
 def test_stop_as_the_answer_cancels_the_whole_task(ears, run, user_replies, clip):
     spoken = user_replies({QUESTION: clip})
     with pytest.raises(asyncio.CancelledError):
-        verdict = run(main.confirm(ears, QUESTION))
+        verdict = run(main.confirm(ears, QUESTION, NAMES))
         print(f"confirm returned {verdict!r} after saying {spoken}")
 
 

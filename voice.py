@@ -19,14 +19,13 @@ MICROPHONE_CHECK_FRAMES = SAMPLE_RATE // 2
 MICROPHONE_CHECK_ATTEMPTS = 30  # 15 s: time to answer the macOS permission prompt on the first run
 WAKE_WINDOW_WORDS = 3
 WAKE_SIMILARITY = 0.75
-YES_MAX_WORDS = 5  # an approval is a few words, not a sentence
 YES = ("yes", "yeah", "yep", "yup", "sure", "confirm", "correct", "go ahead", "do it", "submit")
 YES_FILLERS = ("uh", "um", "okay", "ok", "please", "and")
 YES_ONLY = rf"(({'|'.join(YES_FILLERS)}) )*({'|'.join(YES)})( ({'|'.join(YES + YES_FILLERS)}))*"
 NO = ("no", "nope", "nah", "cancel", "stop", "don't", "do not", "wait", "hold on", "never mind")
 STOP_WORD = "(stop|cancel|abort|never ?mind)"
 STOP = rf"((no|please|okay|hey|wait) )*{STOP_WORD}( (it|that|this|please|right|now|everything|{STOP_WORD}))*"
-DISMISS = (rf"{STOP}|(okay |great |no )*(no|nope|thanks?( you)?( a lot| so much| very much)?"
+DISMISS = (rf"{STOP}|(okay |great |no |hey )*(no|nope|thanks?( you)?( a lot| so much| very much)?"
            rf"|that('s| is) (all|it)|nothing( else)?|(good ?)?bye)")
 
 
@@ -67,11 +66,10 @@ def wake_command(transcript: str, names: tuple[str, ...]) -> str | None:
 
 
 def parse_yes_no(transcript: str) -> bool | None:
-    """True for a short answer of yes words only, False for no (no wins when both are heard), None when unclear."""
+    """True for an answer of yes words only, False for no (no wins when both are heard), None when unclear."""
     if _mentions(transcript, NO):
         return False
-    plain = _plain(transcript)
-    return True if re.fullmatch(YES_ONLY, plain) and len(plain.split()) <= YES_MAX_WORDS else None
+    return True if re.fullmatch(YES_ONLY, _plain(transcript)) else None
 
 
 def is_stop(transcript: str, names: tuple[str, ...] = ()) -> bool:

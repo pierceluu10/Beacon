@@ -15,7 +15,7 @@ from voice import Ears, MicrophoneSilentError, is_dismissal, is_stop, parse_yes_
 
 HOME = Path("~/.hey").expanduser()
 CONFIG_PATH = HOME / "config.toml"
-CONTINUATION_SECONDS = 0.6  # a pause of about half a second splits one sentence into two transcripts
+CONTINUATION_SECONDS = 0.8  # a pause mid-sentence puts 0.47 to 0.52 s between its two transcripts; 0.6 missed some under load
 FOLLOW_UP_SECONDS = 8
 CONFIRM_SECONDS = 8
 CONFIRM_ATTEMPTS = 2
@@ -61,6 +61,10 @@ class Config:
     stt_model: str = "MEDIUM_STREAMING"
     say_voice: str = "Samantha"
 
+    @property
+    def names(self) -> tuple[str, ...]:
+        return (self.agent_name, *self.wake_aliases)
+
 
 def load_config(path: Path = CONFIG_PATH) -> Config:
     values = tomllib.loads(path.read_text()) if path.exists() else {}
@@ -83,26 +87,26 @@ async def hear_whole(ears: Ears, first: str | None) -> str | None:
     return first
 
 
-async def answer_to(ears: Ears, question: str, seconds: float) -> str | None:
+async def answer_to(ears: Ears, question: str, seconds: float, names: tuple[str, ...]) -> str | None:
     await ears.say(question)
     answer = await ears.hear(seconds)
-    if answer and is_stop(answer):
+    if answer and is_stop(answer, names):
         raise asyncio.CancelledError  # "stop" as an answer ends the whole task, not just this step
     return answer
 
 
-async def confirm(ears: Ears, question: str) -> bool:
+async def confirm(ears: Ears, question: str, names: tuple[str, ...]) -> bool:
     """Ask out loud and return True only on a clear spoken yes; silence and no both mean no."""
     for attempt in range(CONFIRM_ATTEMPTS):
-        answer = await answer_to(ears, CONFIRM_RETRY if attempt else question, CONFIRM_SECONDS)
+        answer = await answer_to(ears, CONFIRM_RETRY if attempt else question, CONFIRM_SECONDS, names)
         verdict = parse_yes_no(answer) if answer else False
         if verdict is not None:
             return verdict
     return False
 
 
-async def ask(ears: Ears, question: str) -> str | None:
-    return await hear_whole(ears, await answer_to(ears, question, ASK_SECONDS))
+async def ask(ears: Ears, question: str, names: tuple[str, ...]) -> str | None:
+    return await hear_whole(ears, await answer_to(ears, question, ASK_SECONDS, names))
 
 
 async def stop_when_told(ears: Ears, work: asyncio.Task, names: tuple[str, ...]) -> None:
@@ -134,7 +138,7 @@ async def carry_out(agent: Agent, ears: Ears, command: str, names: tuple[str, ..
 
 
 async def converse(ears: Ears, agent: Agent, config: Config) -> None:
-    names = (config.agent_name, *config.wake_aliases)
+    names = config.names
     clock = asyncio.get_running_loop().time
     last_command = clock()
     while True:
@@ -170,7 +174,7 @@ def build_agent(config: Config, ears: Ears, headless: bool = False) -> Agent:
         uploads=", ".join(sorted(file.name for file in upload_dir.iterdir() if file.is_file())) or NO_FACTS,
         facts=facts_path.read_text() if facts_path.exists() else NO_FACTS)
     return Agent(config.model, profile_dir, upload_dir, prompt, frozenset(config.blocked_hosts),
-                 partial(confirm, ears), partial(ask, ears), headless)
+                 partial(confirm, ears, names=config.names), partial(ask, ears, names=config.names), headless)
 
 
 async def main() -> None:
