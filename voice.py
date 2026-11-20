@@ -10,7 +10,7 @@ from moonshine_voice.transcriber import LineCompleted, LineStarted, TranscriptEv
 
 SAY = "/usr/bin/say"
 SAY_WORDS_PER_MINUTE = "190"
-SAY_TIMEOUT_SECONDS = 20  # `say` hung once in testing here; a spoken line never needs this long
+SAY_TIMEOUT_SECONDS = 20  # `say` hung once in testing here; prompt.txt holds an answer to 35 words, about 13 s
 ECHO_TAIL_SECONDS = 0.3
 QUIET_WAIT_SECONDS = 3  # how long a spoken line waits for the user to finish a sentence
 MAX_UTTERANCE_SECONDS = 15

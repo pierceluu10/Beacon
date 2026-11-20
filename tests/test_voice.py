@@ -1,6 +1,7 @@
 """What the words mean (pure), then the real Ears (Moonshine VAD and speech-to-text) fed synthesized speech through a
 fake input device: no microphone, no human, no sound."""
 import asyncio
+import re
 import time
 from types import SimpleNamespace
 
@@ -28,6 +29,7 @@ SHORT_MICROPHONE_CHECK_ATTEMPTS = 2
 QUESTION = "Ready to press Submit?"
 RETRY = main.CONFIRM_RETRY
 UNCLEAR = "thanks"  # the clip of an answer that is neither yes nor no
+SPEECH_SLOWER_THAN_NOMINAL = 1.2  # measured: 71 words took 24.9 s at 190 words a minute, 1.11 times the nominal 22.4 s
 NEGATED_YES = pytest.mark.xfail(strict=True, reason='voice.NO has no "not", so "not sure" and "not correct" approve')
 REPEATED_STOP = pytest.mark.xfail(strict=True, reason="voice.STOP allows one stop word, so a repeated one is no stop")
 NAME_AFTER_STOP = pytest.mark.xfail(strict=True, reason="main.stop_when_told only strips the name when it comes first")
@@ -179,6 +181,13 @@ def test_stop_watcher_cancels_the_task_only_on_a_stop(heard, stops):
         return work.cancelled()
 
     assert asyncio.run(scenario()) is stops, f"{heard!r} {'did not stop' if stops else 'stopped'} the task"
+
+
+def test_the_longest_answer_the_prompt_allows_is_spoken_before_say_is_killed():
+    bound = re.search(r"under (\d+) words", main.SYSTEM_PROMPT)
+    assert bound, "prompt.txt does not bound the length of the spoken answer"
+    seconds = int(bound[1]) * 60 / int(voice.SAY_WORDS_PER_MINUTE) * SPEECH_SLOWER_THAN_NOMINAL
+    assert seconds < voice.SAY_TIMEOUT_SECONDS, f"{bound[1]} words take {seconds:.0f} s; say is killed after {voice.SAY_TIMEOUT_SECONDS}"
 
 
 @pytest.fixture
