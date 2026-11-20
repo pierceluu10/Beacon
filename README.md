@@ -77,6 +77,29 @@ Chrome is only read, never controlled.
   `blocked_hosts` only the site's name is sent; for a local file, a `chrome://` page or another address it may
   not open, only the reason.
 
+## Work in your own Chrome (opt-in)
+
+By default Beacon drives its own Chrome window with its own logins. To have it work in a tab of the Chrome you
+already use, with your logins:
+
+1. Install the Playwright Extension from the Chrome Web Store:
+   `https://chromewebstore.google.com/detail/playwright-extension/mmlmfjhmonkocbjadbfplnigmagldckm`
+2. Click its toolbar icon and copy the value after `PLAYWRIGHT_MCP_EXTENSION_TOKEN=`.
+3. Put `extension_token = "..."` in `~/.beacon/config.toml`, then `chmod 600 ~/.beacon/config.toml`.
+
+Beacon then opens one tab in your Chrome (in a "Playwright" tab group) and works there. Know what you are
+trading:
+
+- Every site you are logged in to is in reach, including email and banking. `blocked_hosts` and the spoken
+  question are the only things between a hostile page and your accounts.
+- The token lets any program on this Mac attach to your Chrome without asking. Rotate it on the extension's page
+  if it leaks.
+- Chrome shows a "started debugging this browser" banner while Beacon runs.
+- Do not switch tabs in the window Beacon is working in; use another window. Each start leaves its tab behind.
+- A wrong token fails after 30 seconds with a spoken error.
+
+This mode passed the gate tests on a stand-in Chrome. It has not been tried on a real everyday profile.
+
 ## Configuration
 
 Optional, in `~/.beacon/config.toml`. Unknown keys are an error.
@@ -93,6 +116,7 @@ Optional, in `~/.beacon/config.toml`. Unknown keys are an error.
 | `blocked_hosts` | `[]` | Sites it may never navigate to, for example your bank. Links and redirects that land there are not checked. |
 | `stt_model` | `"MEDIUM_STREAMING"` | Or `"SMALL_STREAMING"` (less memory, slightly less accurate). |
 | `say_voice` | `"Samantha"` | Any voice from `say -v '?'`. |
+| `extension_token` | `""` | Set it to work in your own Chrome through the Playwright Extension (see above). |
 
 ## How it works
 
