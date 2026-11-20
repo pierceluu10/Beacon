@@ -24,8 +24,10 @@ UNREADABLE = "unreadable"  # the fact kind the agent reports when inspect.js cou
 SECRET_REFUSAL = ("That is a password, card or verification-code field. Never fill those in: call ask_user and ask the user "
                   "to do it in the window.")
 FILE_REFUSAL = "Saving results to a file is not allowed. Call the tool again without filename."
-SLOWLY_REFUSAL = "Typing slowly is not allowed. Call the tool again without slowly."
-FRAME_REFUSAL = "The focused field is inside an embedded frame that cannot be checked. Use browser_type on the field itself."
+SLOWLY_REFUSAL = ("Typing slowly is not allowed. Type without slowly; if a suggestion list should open, "
+                  "press ArrowDown afterwards.")
+FRAME_REFUSAL = ("Focus is inside an embedded frame that cannot be checked. Use browser_type on a field there, or click "
+                 "the control you want.")
 
 
 class Verdict(NamedTuple):
