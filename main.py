@@ -2,6 +2,7 @@
 import asyncio
 import sys
 import tomllib
+from collections.abc import Callable
 from dataclasses import dataclass, field, fields
 from functools import partial
 from pathlib import Path
@@ -177,10 +178,12 @@ def build_agent(config: Config, ears: Ears, headless: bool = False) -> Agent:
                  partial(confirm, ears, names=config.names), partial(ask, ears, names=config.names), headless)
 
 
-async def main() -> None:
+async def main(started: Callable[[Ears], None] = lambda ears: None) -> None:
+    """Run until cancelled. started receives the Ears once the microphone is live (the menu bar switch uses it)."""
     config = load_config()
     try:
         async with Ears(config.stt_model, [config.agent_name], config.say_voice) as ears, build_agent(config, ears) as agent:
+            started(ears)
             await agent.warm_up()
             await ears.say(READY)
             await converse(ears, agent, config)
@@ -193,7 +196,5 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        pass
+    from menubar import run  # imported here so tests and other callers of main() never load AppKit
+    run()

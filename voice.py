@@ -101,6 +101,7 @@ class Ears:
         self._quiet = asyncio.Event()  # cleared while someone is in the middle of a phrase
         self._quiet.set()
         self._voice = asyncio.Lock()  # one spoken line at a time
+        self._listening = True  # the menu bar switch; off means the microphone stays stopped
         self._mic = MicTranscriber().model_arch(ModelArch[stt_model])
         self._mic.add_listener(self._on_event)
 
@@ -154,4 +155,11 @@ class Ears:
                 await asyncio.sleep(ECHO_TAIL_SECONDS)
             finally:
                 self._quiet.set()
-                self._mic.start()
+                if self._listening:
+                    self._mic.start()
+
+    def set_listening(self, listening: bool) -> None:
+        """Switch the microphone on or off. Call on the event loop; a line being spoken finishes first."""
+        self._listening = listening
+        if not self._voice.locked():  # say() restarts the microphone itself when it is done
+            (self._mic.start if listening else self._mic.stop)()
