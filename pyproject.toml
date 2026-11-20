@@ -1,0 +1,14 @@
+[project]
+name = "hey"
+version = "0.1.0"
+description = "Say the agent's name, speak a command, watch Chrome do it."
+requires-python = ">=3.12,<3.13"
+dependencies = ["anthropic==2.11.0", "mcp==2.3.0", "moonshine-voice==0.1.6", "sounddevice==0.5.6"]
+
+[dependency-groups]
+dev = ["pytest"]
+
+[tool.pytest.ini_options]
+pythonpath = [".", "tests"]
+testpaths = ["tests"]
+addopts = "-v -ra"

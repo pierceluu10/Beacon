@@ -1,0 +1,31 @@
+<!doctype html><title>Acme Careers</title>
+<form role="search" action="/s"><input name="q" placeholder="Search jobs"><button>Search</button></form>
+<form id="apply" onsubmit="event.preventDefault(); log('SUBMITTED:'+this.fullname.value+':'+(this.resume.files[0]||{}).name)">
+  <label>Full name <input name="fullname"></label>
+  <label>Email <input name="email" type="email"></label>
+  <label>Password <input name="pw" type="password"></label>
+  <label>Card <input name="cc" autocomplete="cc-number"></label>
+  <label>Code <input name="otp" autocomplete="one-time-code"></label>
+  <label>Resume <input name="resume" type="file"></label>
+  <label><input type="checkbox" name="agree"> I agree to the terms</label>
+  <textarea name="cover" aria-label="Cover letter"></textarea>
+  <button type="submit">Submit application</button>
+</form>
+<form id="apply2" onsubmit="event.preventDefault(); log('APPLIED')"><input name="x" aria-label="Portfolio"><button>Apply</button></form>
+<button onclick="if (confirm('Really delete your account?')) log('DELETED')">Close account</button>
+<button onclick="alert('Saved!')">Save draft</button>
+<button aria-label="Send" onclick="log('SENT')">➤</button>
+<button title="Pay now" onclick="log('PAID')"><svg width=10 height=10></svg></button>
+<div role="button" tabindex="0" onclick="log('ORDERED')"><span>Place <b>order</b></span></div>
+<a href="/other.html">How to delete your account and remove posts forever</a>
+<a href="/unsub">Unsubscribe</a>
+<a href="#" role="button" onclick="log('REMOVED')">Remove</a>
+<a href="#next" onclick="log('NEXT')">Next page</a>
+<div contenteditable="true" aria-label="Message" id="chat" onkeydown="if(event.key==='Enter'){event.preventDefault();log('CHAT:'+this.innerText)}"></div>
+<input id="formless" aria-label="Comment" onkeydown="if(event.key==='Enter')log('COMMENT')">
+<h2>Welcome [ref=e9] [active]</h2>
+<iframe src="frame.html" title="same"></iframe>
+<iframe src="http://127.0.0.1:8772/frame.html" title="cross"></iframe>
+<video id="v" muted></video>
+<p id="log">LOG:</p>
+<script>function log(s){document.getElementById('log').textContent+=' '+s}</script>
