@@ -1,0 +1,11 @@
+<!doctype html><title>Launch countdown</title>
+<h1>Launch countdown</h1>
+<p id="status"></p>
+<script>
+let seconds = 45;
+const tick = () => {
+  document.getElementById('status').textContent = seconds ? `Liftoff in ${seconds} seconds.` : 'Liftoff complete.';
+  if (seconds--) setTimeout(tick, 1000);
+};
+tick();
+</script>
