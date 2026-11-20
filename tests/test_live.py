@@ -45,6 +45,11 @@ YOUTUBE_COMMANDS = [
     ("go to YouTube and search for lo-fi hip hop radio", "youtube.com/results"),
     ("play the first video", "youtube.com/watch"),
 ]
+UNCACHED_TOKENS_PER_CALL = 100  # measured 4: the system prompt and the growing history are read from or written to the cache
+JOBS = "jobs.html"  # two postings titled Software Engineer
+QUESTIONS = "questions.html"  # four required answers that conftest.FACTS does not hold
+TOPICS = ("experience", "salary", "hear", "start date")
+SKIPPED = "Skip that one."
 DOLLARS_PER_MILLION_TOKENS = {  # claude-opus-5-5, the model Config defaults to
     "input_tokens": 4.0, "cache_read_input_tokens": 0.2, "cache_creation_input_tokens": 5.0, "output_tokens": 20.0}
 TOKENS_PER_MILLION = 1_000_000
@@ -267,18 +272,20 @@ class TestConversation:
 
 @contextlib.asynccontextmanager
 async def typed_session(home: Path) -> AsyncIterator[SimpleNamespace]:
-    """The agent alone, for commands given as text: gate questions are recorded and answered no, model calls are timed."""
-    session = SimpleNamespace(gate_questions=[], model_calls=[])
+    """The agent alone, for commands given as text: gate questions are recorded and answered no, ask_user questions
+    are recorded and answered with session.reply, model calls are timed."""
+    session = SimpleNamespace(gate_questions=[], questions=[], reply=None, model_calls=[])
 
     async def refuse(question: str) -> bool:
         session.gate_questions.append(question)
         return False
 
-    async def nobody_answers(question: str) -> None:
-        print(f"ask_user: {question}")
+    async def answer(question: str) -> str | None:
+        session.questions.append(question)
+        return session.reply
 
     async with build_agent(config_in(home), ears=None, headless=True) as session.agent:
-        session.agent._confirm, session.agent._ask = refuse, nobody_answers
+        session.agent._confirm, session.agent._ask = refuse, answer
         await session.agent.warm_up()
         create = session.agent._anthropic.messages.create
 
@@ -307,21 +314,46 @@ def youtube(runner: asyncio.Runner, tmp_path_factory: pytest.TempPathFactory) ->
 
 
 class TestYouTube:
-    """The agent loop on the live site: ordinary browsing must never trigger a spoken question."""
+    """The agent loop on typed commands: ordinary browsing on the live site must never trigger a spoken question, and
+    a real fork or a missing answer must."""
 
     @pytest.mark.parametrize(("command", "address"), YOUTUBE_COMMANDS)
     def test_a_typed_command_is_carried_out_without_a_gate_question(self, runner: asyncio.Runner,
                                                                   youtube: SimpleNamespace, command: str, address: str):
         youtube.gate_questions.clear()
+        youtube.questions.clear()
         youtube.model_calls.clear()
         started = time.monotonic()
         answer = runner.run(youtube.agent.run(command))
         seconds = time.monotonic() - started
         arrived = runner.run(page_value(youtube.agent, ADDRESS_JS))
+        uncached = [usage.input_tokens for _, usage in youtube.model_calls]
         print(f"{command!r}: {seconds:.1f} s, {spending(youtube.model_calls)}\n  answer: {answer!r}\n  page: {arrived}")
-        assert youtube.gate_questions == [], f"the gate asked {youtube.gate_questions}"
+        assert youtube.gate_questions + youtube.questions == [], f"asked {youtube.gate_questions + youtube.questions}"
         assert answer.strip() and answer not in (OUT_OF_STEPS, REFUSED), f"the agent answered {answer!r}"
         assert address in arrived, f"the browser is on {arrived}; the agent answered {answer!r}"
+        assert max(uncached) < UNCACHED_TOKENS_PER_CALL, f"tokens paid at full price in each model call: {uncached}"
 
     def test_the_playing_video_is_detected(self, runner: asyncio.Runner, youtube: SimpleNamespace):
         assert runner.run(youtube.agent.media_playing()), "no unmuted video is playing after 'play the first video'"
+
+    def test_two_postings_with_the_same_title_make_it_ask_which_before_applying(
+            self, runner: asyncio.Runner, youtube: SimpleNamespace, site: str):
+        youtube.gate_questions.clear()
+        youtube.questions.clear()
+        runner.run(youtube.agent._call("browser_navigate", {"url": f"{site}/{JOBS}"}))
+        answer = runner.run(youtube.agent.run("apply to the engineer job"))
+        log = runner.run(page_value(youtube.agent, FORM_LOG_JS)).strip()
+        print(f"asked {youtube.questions}, gate asked {youtube.gate_questions}\n  answer: {answer!r}")
+        assert youtube.questions and not youtube.gate_questions and log == EMPTY_LOG, (
+            f"asked {youtube.questions}, pressed {youtube.gate_questions}, the page logged {log!r}; it answered {answer!r}")
+
+    def test_missing_answers_are_asked_for_one_question_at_a_time(
+            self, runner: asyncio.Runner, youtube: SimpleNamespace, site: str, monkeypatch: pytest.MonkeyPatch):
+        youtube.questions.clear()
+        monkeypatch.setattr(youtube, "reply", SKIPPED)
+        runner.run(youtube.agent._call("browser_navigate", {"url": f"{site}/{QUESTIONS}"}))
+        answer = runner.run(youtube.agent.run("fill out this page and save it"))
+        bundled = [question for question in youtube.questions if sum(topic in question.lower() for topic in TOPICS) > 1]
+        print(f"asked {youtube.questions}\n  answer: {answer!r}")
+        assert youtube.questions and not bundled, f"one spoken answer cannot cover {bundled}; it asked {youtube.questions}"

@@ -1,0 +1,11 @@
+<!doctype html><title>Globex Careers - Application questions</title>
+<h1>Application questions</h1>
+<form onsubmit="event.preventDefault(); log('SAVED')">
+  <label>Years of professional experience <input name="years" required></label>
+  <label>Desired salary in dollars <input name="salary" required></label>
+  <label>How did you hear about this job? <input name="source" required></label>
+  <label>Earliest start date <input name="start" required></label>
+  <button type="submit">Save</button>
+</form>
+<p id="log">LOG:</p>
+<script>function log(s){document.getElementById('log').textContent+=' '+s}</script>
