@@ -15,6 +15,8 @@ import everyday
 from gate import ALLOW, UNREADABLE, Verdict, judge, judge_dialog, to_inspect, url_refusal
 
 PLAYWRIGHT_MCP = "@playwright/mcp@0.0.86"
+EXTENSION_TOKEN_VARIABLE = "PLAYWRIGHT_MCP_EXTENSION_TOKEN"  # with it the Playwright Extension connects without a dialog
+CURRENT_TAB = re.compile(r"^- (\d+): \(current\)", re.MULTILINE)
 NAVIGATION_TIMEOUT_MILLISECONDS = "20000"
 SETTLE_MILLISECONDS = "100"  # server default 500: the fixed wait after every action, and so after every gate inspection
 BROWSER_TOOLS = frozenset({
@@ -81,16 +83,18 @@ class Agent:
     """One browser, one conversation. Use as an async context manager."""
 
     def __init__(self, model: str, profile_dir: Path, upload_dir: Path, system_prompt: str, blocked_hosts: frozenset[str],
-                 confirm: Confirm, ask: Ask, headless: bool = False) -> None:
+                 confirm: Confirm, ask: Ask, headless: bool = False, extension_token: str = "") -> None:
         self._model, self._blocked_hosts, self._confirm, self._ask = model, blocked_hosts, confirm, ask
         self._profile_dir = profile_dir
+        self._in_own_chrome = bool(extension_token)  # a tab in the user's own Chrome instead of a window with its own profile
+        own_window = ["--browser", "chrome", "--user-data-dir", str(profile_dir), *(["--headless"] if headless else [])]
         self._system = [{"type": "text", "text": system_prompt, "cache_control": CACHED}]
         # cwd is the server's only upload root; --output-dir keeps its own files out of it.
-        self._server = StdioServerParameters(command="npx", cwd=str(upload_dir), args=[
-            "-y", PLAYWRIGHT_MCP, "--browser", "chrome", "--user-data-dir", str(profile_dir),
-            "--output-dir", str(profile_dir.parent / "playwright-output"), "--snapshot-mode", "none", "--codegen", "none",
-            "--timeout-navigation", NAVIGATION_TIMEOUT_MILLISECONDS, "--timeout-settle", SETTLE_MILLISECONDS,
-            *(["--headless"] if headless else [])])
+        self._server = StdioServerParameters(
+            command="npx", cwd=str(upload_dir), env={EXTENSION_TOKEN_VARIABLE: extension_token} if extension_token else None,
+            args=["-y", PLAYWRIGHT_MCP, *(["--extension"] if extension_token else own_window),
+                  "--output-dir", str(profile_dir.parent / "playwright-output"), "--snapshot-mode", "none", "--codegen", "none",
+                  "--timeout-navigation", NAVIGATION_TIMEOUT_MILLISECONDS, "--timeout-settle", SETTLE_MILLISECONDS])
         self._anthropic = AsyncAnthropic(timeout=Timeout(REQUEST_TIMEOUT_SECONDS, connect=DEFAULT_TIMEOUT.connect))
         self._stack = AsyncExitStack()
         self._messages: list[dict] = []
@@ -137,6 +141,8 @@ class Agent:
             page["text"] = STALE_SNAPSHOT
         self._pages.clear()
         try:
+            if self._in_own_chrome:
+                await self._show_tab()
             snapshot, in_front = await asyncio.gather(self._page(), self._everyday_page())
             asked = f"{command}\n\n{in_front}{NOW.format(now=datetime.now())}\n\n{PAGE_NOW}"
             self._messages.append({"role": "user", "content": [{"type": "text", "text": asked}, self._page_block(snapshot)]})
@@ -173,6 +179,12 @@ class Agent:
         refusal = url_refusal(address, self._blocked_hosts)
         return (EVERYDAY_REFUSED.format(refusal=refusal) if refusal
                 else EVERYDAY_PAGE.format(title=title[:EVERYDAY_TITLE_CHARACTERS], address=address)) + "\n\n"
+
+    async def _show_tab(self) -> None:
+        """In the user's own Chrome a click times out unless the agent's tab is the one showing in its window."""
+        current = CURRENT_TAB.search(await self._call("browser_tabs", {"action": "list"}))
+        if current:
+            await self._call("browser_tabs", {"action": "select", "index": int(current[1])})
 
     async def _page(self) -> str:
         """The current page for the model. A page that turns blank mid-task means the window was closed."""
