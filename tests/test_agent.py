@@ -13,7 +13,7 @@ import pytest
 from agent import (DECLINED, EVALUATE_RESULT, EVALUATE_TOOL, NO_ANSWER, NOTHING_TO_SAY, PAGE_SETTLE_SECONDS, Agent,
                    BrowserClosedError)
 from conftest import scratch_home
-from gate import SECRET_REFUSAL
+from gate import FILE_REFUSAL, SECRET_REFUSAL, SPOKEN_LABEL_CHARACTERS
 
 NEVER_SENT = "never sent: these tests make no API request"
 BLOCKED_HOST = "bank.example"
@@ -27,6 +27,7 @@ FRAME_SENT = "FRAME-SENT"
 QUESTION = "Ready to {action}. Say yes to go ahead, or no to cancel."
 DIALOG_QUESTION = "The page asks: Really delete your account. Say yes to accept, or no to cancel."
 SPOKEN_QUESTION = "What is your phone number?"
+DIGEST_CARD = "Weekly digest" + " of new jobs" * 16 + " Subscribe"  # what the question keeps of the form page's longest label
 ATTACHED_FILES_JS = "() => [...document.querySelector('input[type=file]').files].map((file) => file.name)"
 START_AUDIO_JS = ("() => { const audio = new Audio(); document.body.append(audio);"
                   " audio.srcObject = new AudioContext().createMediaStreamDestination().stream; return audio.play(); }")
@@ -70,6 +71,7 @@ COMMENT = Element('textbox "Comment"')
 RESUME = Element('button "Resume"')
 SUBMIT = Element('button "Submit application"')
 CLOSE_ACCOUNT = Element('button "Close account"')
+AGREE = Element('checkbox "I agree to the terms"')
 
 
 def click(element: Element) -> tuple[str, dict]:
@@ -198,7 +200,7 @@ def attempt_case(browser: Browser, case: Case) -> Outcome:
 HARMLESS = [
     Case("click into a field", *click(FULL_NAME)),
     Case("fill two fields", *fill({FULL_NAME: "Pierce Luu", Element('textbox "Email"'): "p@example.com"})),
-    Case("tick the agree checkbox", *click(Element('checkbox "I agree to the terms"'))),
+    Case("tick the agree checkbox", *click(AGREE)),
     Case("Enter in the search box", *type_into(Element('textbox "Search jobs"'), "x", submit=True),
          returns=PAGE_REPORT + "/s?q=x\n", page=Page("/s?q=x", None, 0)),
     Case("ten-word link title containing delete and remove",
@@ -211,6 +213,9 @@ HARMLESS = [
     Case("Space on the focused Search button", *press("Space"),
          before=(click(Element('textbox "Search jobs"')), press("Tab")),
          returns=PAGE_REPORT, page=Page("/s?q=", None, 0)),  # a key press returns while the search is still loading
+    Case("submit button of a form whose only sign of search is the box's name", *click(Element('button "Look up"')),
+         returns=PAGE_REPORT + "/results?search_query=\n", page=Page("/results?search_query=", None, 0)),
+    Case("slowly typed words in a field", *type_into(COMMENT, "hello there", slowly=True)),
     Case("dismiss a confirm() dialog", "browser_handle_dialog", {"accept": False}, before=(click(CLOSE_ACCOUNT),),
          returns=PAGE_REPORT + FORM + "\n"),
     Case("accept an alert()", "browser_handle_dialog", {"accept": True}, before=(click(Element('button "Save draft"')),),
@@ -242,6 +247,37 @@ IRREVERSIBLE = [
          question="press Enter in Message on localhost"),
     Case("Enter inside a cross-origin iframe", *press("Enter"), before=(click(Element('textbox "Frame message"', 1)),),
          question="press Enter in an embedded form on localhost"),
+    Case("carriage return as the key", *press("\r"), before=(click(COMMENT),), question="press Enter in Comment on localhost"),
+    Case("Enter written first in a chord", *press("Enter+Shift"), before=(click(FULL_NAME),),
+         question="press Enter in Full name on localhost"),
+    Case("Enter on the ticked agree checkbox", *press("Enter"), before=(click(AGREE),),
+         question="press Enter in this form on localhost"),
+    Case("typing with submit in a field named Research interests",
+         *type_into(Element('textbox "Research interests"'), "x", submit=True),
+         question="press Enter in Research interests on localhost"),
+    Case("slowly typed space aimed at a button", *type_into(Element('button "Send"'), " ", slowly=True),
+         question="press Send on localhost"),
+    Case("submit button with no label of its own", *click(Element('button "Submit"')), question="press this button on localhost"),
+    Case("form submit button whose label is not on the word list", *click(Element('button "Complete order"')),
+         question="press Complete order on localhost"),
+    Case("image submit button named by its alt text", *click(Element('button "Continue"')),
+         question="press Continue on localhost"),
+    Case("icon named by aria-labelledby", *click(Element('button "Delete repository"')),
+         question="press Delete repository on localhost"),
+    Case("icon named by the title inside its svg", *click(Element('button "Remove item"')),
+         question="press Remove item on localhost"),
+    Case("button whose text is slotted into a web component", *click(Element('button "Delete workspace"')),
+         question="press Delete workspace on localhost"),
+    Case("button on a read-only island inside an editor", *click(Element('button "Delete page"')),
+         question="press Delete page on localhost"),
+    Case("button inside the label of a checkbox", *click(Element('button "Delete history"')),
+         question="press Delete history on localhost"),
+    Case("fill_form ticking a menu item as a checkbox", "browser_fill_form", {"fields": [
+        {"name": "Delete account", "type": "checkbox", "target": Element('menuitemcheckbox "Delete account"'), "value": "true"}]},
+         question="press Delete account on localhost"),
+    Case("button whose label ends in Subscribe after 200 characters", "browser_click",  # the server also takes a CSS selector
+         {"target": "#digest", "element": "Weekly digest"},
+         question=f"press {DIGEST_CARD[:SPOKEN_LABEL_CHARACTERS]} on localhost"),
 ]
 
 REFUSED = [
@@ -249,12 +285,18 @@ REFUSED = [
     Case("fill a card number field", *fill({Element('textbox "Card"'): "4111"}), returns=SECRET_REFUSAL),
     Case("press a key in a one-time-code field", *press("1"), before=(click(Element('textbox "Code"')),),
          returns=SECRET_REFUSAL),
+    Case("type at the label around a password field", "browser_type",  # the server also takes a CSS selector as a target
+         {"target": "label:has([name=pw])", "element": "Password", "text": "hunter2"}, returns=SECRET_REFUSAL),
+    Case("type into a password field shown as text", *type_into(Element('textbox "Passphrase"'), "hunter2"),
+         returns=SECRET_REFUSAL),
     Case("stale ref", "browser_click", {"target": "e999", "element": "gone"},
          returns=f"{SERVER_ERROR}\nError: Ref e999 not found"),
     Case("navigate to a file", "browser_navigate", {"url": "file:///etc/hosts"},
          returns="Only http and https addresses are allowed."),
     Case("navigate to loopback", "browser_navigate", {"url": "http://127.0.0.1/form.html"},
          returns="Private and loopback addresses are blocked."),
+    Case("navigate to script shaped like host:port", "browser_navigate", {"url": "javascript:1/log('SCRIPT')"},
+         returns="Only http and https addresses are allowed."),
     Case("open a blocked host's subdomain in a new tab", "browser_tabs",
          {"action": "new", "url": f"https://www.{BLOCKED_HOST}/"}, returns=f"www.{BLOCKED_HOST} is blocked."),
     Case("a tool the model is never given", EVALUATE_TOOL, {"function": "() => 1"},
@@ -309,6 +351,15 @@ def test_upload_from_outside_the_upload_folder_is_refused(browser: Browser) -> N
     browser.call("browser_file_upload", {})  # cancels the file chooser, which is still open
     attached, page = browser.attached_files(), browser.page()
     assert attached == [] and page == UNTOUCHED, f"attached {attached}, {page}"
+
+
+def test_find_may_not_save_its_results_over_a_file_in_the_upload_folder(browser: Browser) -> None:
+    browser.open_form()
+    resume = browser.home / "uploads" / "resume.pdf"
+    before = resume.read_bytes()
+    outcome = browser.attempt("browser_find", {"text": "Submit", "filename": resume.name})
+    assert outcome.asked == [] and outcome.returned == FILE_REFUSAL, f"saving was not refused: {outcome}"
+    assert resume.read_bytes() == before, f"the resume was overwritten with {resume.read_bytes()!r}"
 
 
 def test_upload_from_the_upload_folder_needs_no_question(browser: Browser) -> None:

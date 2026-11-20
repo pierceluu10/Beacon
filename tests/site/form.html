@@ -1,11 +1,14 @@
 <!doctype html><title>Acme Careers</title>
 <form role="search" action="/s"><input name="q" placeholder="Search jobs"><button>Search</button></form>
+<form action="/results"><input name="search_query" aria-label="Find videos"><button aria-label="Look up">&#128269;</button></form>
 <form id="apply" onsubmit="event.preventDefault(); log('SUBMITTED:'+this.fullname.value+':'+(this.resume.files[0]||{}).name)">
   <label>Full name <input name="fullname"></label>
   <label>Email <input name="email" type="email"></label>
   <label>Password <input name="pw" type="password"></label>
   <label>Card <input name="cc" autocomplete="cc-number"></label>
   <label>Code <input name="otp" autocomplete="one-time-code"></label>
+  <input autocomplete="Current-Password" aria-label="Passphrase">
+  <label>Research interests <input name="interests"></label>
   <label>Resume <input name="resume" type="file"></label>
   <label><input type="checkbox" name="agree"> I agree to the terms</label>
   <textarea name="cover" aria-label="Cover letter"></textarea>
@@ -23,9 +26,25 @@
 <a href="#next" onclick="log('NEXT')">Next page</a>
 <div contenteditable="true" aria-label="Message" id="chat" onkeydown="if(event.key==='Enter'){event.preventDefault();log('CHAT:'+this.innerText)}"></div>
 <input id="formless" aria-label="Comment" onkeydown="if(event.key==='Enter')log('COMMENT')">
+<form onsubmit="event.preventDefault(); log('BARE')"><input type="submit"></form>
+<form onsubmit="event.preventDefault(); log('COMPLETED')"><button>Complete order</button></form>
+<form onsubmit="event.preventDefault(); log('CONTINUED')"><input type="image" alt="Continue" src="data:,"></form>
+<span id="trash" hidden>Delete repository</span>
+<button aria-labelledby="trash" onclick="log('REPOSITORY')"><svg width=10 height=10></svg></button>
+<button onclick="log('ITEM')"><svg width=10 height=10><title>Remove item</title></svg></button>
+<slot-button onclick="log('WORKSPACE')">Delete workspace</slot-button>
+<div contenteditable="true" role="textbox" aria-label="Notes"><div contenteditable="false"><button onclick="log('PAGE')">Delete page</button></div></div>
+<label><input type="checkbox"> Keep me posted <button type="button" onclick="log('HISTORY')">Delete history</button></label>
+<div role="menuitemcheckbox" aria-checked="false" tabindex="0" onclick="log('ERASED')">Delete account</div>
+<div id="digest" role="button" tabindex="0" onclick="log('SUBSCRIBED')">Weekly digest of new jobs, of new jobs, of new jobs, of new jobs, of new jobs, of new jobs, of new jobs, of new jobs, of new jobs, of new jobs, of new jobs, of new jobs, of new jobs, of new jobs, of new jobs, of new jobs. Subscribe</div>
 <h2>Welcome [ref=e9] [active]</h2>
 <iframe src="frame.html" title="same"></iframe>
 <iframe src="http://127.0.0.1:8772/frame.html" title="cross"></iframe>
 <video id="v" muted></video>
 <p id="log">LOG:</p>
-<script>function log(s){document.getElementById('log').textContent+=' '+s}</script>
+<script>
+function log(s){document.getElementById('log').textContent+=' '+s}
+customElements.define('slot-button', class extends HTMLElement {
+  constructor() { super(); this.attachShadow({mode: 'open'}).innerHTML = '<button><slot></slot></button>'; }
+});
+</script>
