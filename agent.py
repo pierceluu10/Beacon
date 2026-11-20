@@ -4,9 +4,10 @@ import json
 import re
 from collections.abc import Awaitable, Callable
 from contextlib import AsyncExitStack
+from datetime import datetime
 from pathlib import Path
 
-from anthropic import AsyncAnthropic
+from anthropic import DEFAULT_TIMEOUT, AsyncAnthropic, Timeout
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
@@ -22,6 +23,7 @@ BROWSER_TOOLS = frozenset({
 PAGE_SETTLE_SECONDS = 0.5  # key presses return at once; the snapshot the model sees waits for the page to react
 SNAPSHOT_TOOL = "browser_snapshot"
 EVALUATE_TOOL = "browser_evaluate"
+BROWSER_CALL_TIMEOUT_SECONDS = 45  # above the server's 30 s browser_wait_for cap; a page script that never yields hangs a call
 ASK_TOOL = {
     "name": "ask_user",
     "description": "Say one short question out loud to the user and return their spoken answer. Use it for a missing fact, "
@@ -32,20 +34,29 @@ INSPECT_JS = Path(__file__).with_name("inspect.js").read_text()
 MEDIA_PLAYING_JS = "() => [...document.querySelectorAll('video, audio')].some((media) => !media.paused && !media.muted)"
 EVALUATE_RESULT = re.compile(r"### Result\n(.*?)(?=\n###|\Z)", re.DOTALL)
 MEDIA_PLAYING_RESULT = "### Result\ntrue"
+SECRET_VALUES_JS = ("() => [...document.querySelectorAll('input[type=password], input[autocomplete*=cc- i], "
+                    "input[autocomplete*=one-time-code i], input[autocomplete*=-password i]')]"
+                    ".map((input) => input.value).filter(Boolean)")
+HIDDEN = "(hidden)"
 BLANK_PAGE = "### Page\n- Page URL: about:blank\n"
+WEB_PAGE = "### Page\n- Page URL: http"
+NOW = "It is {now:%A %d %B %Y, %H:%M} local time."
 PAGE_NOW = "The page right now:"
 STALE_SNAPSHOT = "(older page snapshot removed)"
 SNAPSHOT_CHARACTER_LIMIT = 40_000
 SNAPSHOT_CUT = "\n(snapshot cut off here; use browser_find to locate anything below)"
 KEPT_BLOCK_TYPES = ("text", "tool_use")  # thinking blocks are bound to the unedited history, which pruning rewrites
+CACHED = {"type": "ephemeral"}
 MAX_TOKENS = 4096
 REQUEST_TIMEOUT_SECONDS = 60
-MAX_STEPS = 60
+MAX_STEPS = 40  # a command keeps every snapshot it took; 40 of the largest still fit the context window
 WARMUP = "warmup"
 DECLINED = "The user said no. Do not retry or work around it. Stop and tell the user what you left undone."
 NO_ANSWER = "The user did not answer."
 INTERRUPTED = "[The user interrupted you before you finished. Wait for their next request.]"
 OUT_OF_STEPS = "I ran out of steps before finishing."
+CUT_OFF = "That step needed more writing than I can do at once, so I stopped."
+UNCHECKABLE = "Refused: this call could not be checked ({error}). Correct its arguments or try another way."
 REFUSED = "I can't help with that one."
 NOTHING_TO_SAY = "Done."
 
@@ -67,29 +78,34 @@ class Agent:
     def __init__(self, model: str, profile_dir: Path, upload_dir: Path, system_prompt: str, blocked_hosts: frozenset[str],
                  confirm: Confirm, ask: Ask, headless: bool = False) -> None:
         self._model, self._blocked_hosts, self._confirm, self._ask = model, blocked_hosts, confirm, ask
-        self._system = [{"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}]
+        self._system = [{"type": "text", "text": system_prompt, "cache_control": CACHED}]
         # cwd is the server's only upload root; --output-dir keeps its own files out of it.
         self._server = StdioServerParameters(command="npx", cwd=str(upload_dir), args=[
             "-y", PLAYWRIGHT_MCP, "--browser", "chrome", "--user-data-dir", str(profile_dir),
             "--output-dir", str(profile_dir.parent / "playwright-output"), "--snapshot-mode", "none", "--codegen", "none",
             "--timeout-navigation", NAVIGATION_TIMEOUT_MILLISECONDS, "--timeout-settle", SETTLE_MILLISECONDS,
             *(["--headless"] if headless else [])])
-        self._anthropic = AsyncAnthropic(timeout=REQUEST_TIMEOUT_SECONDS)
+        self._anthropic = AsyncAnthropic(timeout=Timeout(REQUEST_TIMEOUT_SECONDS, connect=DEFAULT_TIMEOUT.connect))
         self._stack = AsyncExitStack()
         self._messages: list[dict] = []
-        self._latest_page: dict | None = None
+        self._pages: list[dict] = []
         self._on_page = False
 
     async def __aenter__(self) -> "Agent":
-        read, write = await self._stack.enter_async_context(stdio_client(self._server))
-        self._browser = await self._stack.enter_async_context(ClientSession(read, write))
-        await self._browser.initialize()
-        listed = await self._browser.list_tools()
-        self._tools = [{"name": tool.name, "description": tool.description, "input_schema": tool.input_schema}
-                       for tool in listed.tools if tool.name in BROWSER_TOOLS] + [ASK_TOOL]
-        opened = await self._browser.call_tool("browser_tabs", {"action": "list"})  # the window opens now, not on the first command
-        if opened.is_error:
-            raise BrowserStartError(_text(opened))
+        try:
+            read, write = await self._stack.enter_async_context(stdio_client(self._server))
+            self._browser = await self._stack.enter_async_context(ClientSession(read, write))
+            await self._browser.initialize()
+            listed = await self._browser.list_tools()
+            self._tools = [{"name": tool.name, "description": tool.description, "input_schema": tool.input_schema}
+                           for tool in listed.tools if tool.name in BROWSER_TOOLS] + [ASK_TOOL]
+            # The window opens now, not on the first command.
+            opened = await self._browser.call_tool("browser_tabs", {"action": "list"})
+            if opened.is_error:
+                raise BrowserStartError(_text(opened))
+        except BaseException:  # Python skips __aexit__ when __aenter__ fails, and the open server would hang asyncio.run
+            await self.__aexit__()
+            raise
         return self
 
     async def __aexit__(self, *exc_info: object) -> None:
@@ -103,7 +119,7 @@ class Agent:
 
     def forget(self) -> None:
         self._messages.clear()
-        self._latest_page = None
+        self._pages.clear()
 
     async def media_playing(self) -> bool:
         return MEDIA_PLAYING_RESULT in await self._call(EVALUATE_TOOL, {"function": MEDIA_PLAYING_JS})
@@ -111,24 +127,29 @@ class Agent:
     async def run(self, command: str) -> str:
         """Carry out one spoken command and return the sentence to speak back. Cancel the task to interrupt it."""
         self._on_page = False
+        for page in self._pages:  # a command keeps the pages it saw, or the model forgets why it acted and redoes the step
+            page["text"] = STALE_SNAPSHOT
+        self._pages.clear()
         try:
-            self._messages.append({"role": "user", "content": [{"type": "text", "text": f"{command}\n\n{PAGE_NOW}"},
+            asked = f"{command}\n\n{NOW.format(now=datetime.now())}\n\n{PAGE_NOW}"
+            self._messages.append({"role": "user", "content": [{"type": "text", "text": asked},
                                                                self._page_block(await self._page())]})
             for _ in range(MAX_STEPS):
                 reply = await self._anthropic.messages.create(model=self._model, max_tokens=MAX_TOKENS, system=self._system,
-                                                              tools=self._tools, messages=self._messages)
+                                                              tools=self._tools, messages=self._messages, cache_control=CACHED)
                 if reply.stop_reason != "tool_use":
                     said = " ".join(block.text for block in reply.content if block.type == "text").strip()
-                    answer = REFUSED if reply.stop_reason == "refusal" else said or NOTHING_TO_SAY
+                    answer = (REFUSED if reply.stop_reason == "refusal" else CUT_OFF if reply.stop_reason == "max_tokens"
+                              else said or NOTHING_TO_SAY)
                     self._messages.append({"role": "assistant", "content": answer})
                     return answer
                 kept = [block for block in reply.content if block.type in KEPT_BLOCK_TYPES]
                 results = [{"type": "tool_result", "tool_use_id": call.id, "content": await self._use(call.name, call.input)}
                            for call in kept if call.type == "tool_use"]
+                # Appended together and before the wait, so a stop from here on finds a valid history of what was done.
+                self._messages += [{"role": "assistant", "content": kept}, {"role": "user", "content": results}]
                 await asyncio.sleep(PAGE_SETTLE_SECONDS)
-                # Appended together, so the history is valid whenever this task is cancelled.
-                self._messages += [{"role": "assistant", "content": kept},
-                                   {"role": "user", "content": [*results, self._page_block(await self._page())]}]
+                results.append(self._page_block(await self._page()))
         except BaseException:
             self._messages.append({"role": "user", "content": INTERRUPTED})
             raise
@@ -141,13 +162,16 @@ class Agent:
         if blank and self._on_page:
             raise BrowserClosedError
         self._on_page = not blank
+        typed = EVALUATE_RESULT.search(await self._call(EVALUATE_TOOL, {"function": SECRET_VALUES_JS}))
+        shown = [re.escape(form) for secret in (json.loads(typed[1]) if typed else [])
+                 for form in (secret, json.dumps(secret, ensure_ascii=False))]  # the snapshot quotes some values
+        if shown:  # what the user typed during a hand-over; top document only
+            snapshot = re.sub(rf"(?m): (?:{'|'.join(shown)})$", f": {HIDDEN}", snapshot)
         return snapshot[:SNAPSHOT_CHARACTER_LIMIT] + SNAPSHOT_CUT if len(snapshot) > SNAPSHOT_CHARACTER_LIMIT else snapshot
 
     def _page_block(self, snapshot: str) -> dict:
-        if self._latest_page:
-            self._latest_page["text"] = STALE_SNAPSHOT
-        self._latest_page = {"type": "text", "text": snapshot}
-        return self._latest_page
+        self._pages.append({"type": "text", "text": snapshot})
+        return self._pages[-1]
 
     async def _use(self, tool: str, arguments: dict) -> str:
         if tool == ASK_TOOL["name"]:
@@ -155,7 +179,10 @@ class Agent:
             return f"The user said: {answer}" if answer else NO_ANSWER
         if tool not in BROWSER_TOOLS:
             return f"Unknown tool {tool}."
-        verdict = await self._verdict(tool, arguments)
+        try:
+            verdict = await self._verdict(tool, arguments)
+        except (AttributeError, KeyError, TypeError, ValueError) as error:  # wrong-typed arguments, or page-tampered facts
+            return UNCHECKABLE.format(error=error)
         if verdict.decision == "deny":
             return verdict.text
         if verdict.decision == "ask" and not await self._confirm(verdict.text):
@@ -178,7 +205,9 @@ class Agent:
         return json.loads(result[1]) if result else {"kind": UNREADABLE, "label": output}  # stale ref, open dialog
 
     async def _call(self, tool: str, arguments: dict) -> str:
-        return _text(await self._browser.call_tool(tool, arguments))
+        text = _text(await self._browser.call_tool(tool, arguments, read_timeout_seconds=BROWSER_CALL_TIMEOUT_SECONDS))
+        self._on_page = self._on_page or WEB_PAGE in text  # a navigation result counts: a session's first snapshot is blank
+        return text
 
 
 def _text(result) -> str:

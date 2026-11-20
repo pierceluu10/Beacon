@@ -1,17 +1,30 @@
-"""The gate on a real page: the real Playwright MCP server drives headless Chrome on tests/site/form.html and every call
-goes through Agent._use, with a scripted user in place of the microphone. No Anthropic API request is made."""
+"""The gate and the agent loop on a real page: the real Playwright MCP server drives headless Chrome on
+tests/site/form.html, with a scripted user in place of the microphone and scripted replies in place of the model.
+The last tests run main.py's error handling on stand-ins. No Anthropic API request is made."""
 import asyncio
+import copy
+import itertools
 import json
 import operator
 import re
-from collections.abc import Awaitable, Iterator
+import subprocess
+from collections.abc import Awaitable, Callable, Iterator
+from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import NamedTuple
 
+import anthropic
+import httpx2
 import pytest
+from anthropic.types import Message
+from mcp import MCPError
 
-from agent import (DECLINED, EVALUATE_RESULT, EVALUATE_TOOL, NO_ANSWER, NOTHING_TO_SAY, PAGE_SETTLE_SECONDS, Agent,
-                   BrowserClosedError)
+import agent
+import main
+from agent import (CACHED, CUT_OFF, DECLINED, EVALUATE_RESULT, EVALUATE_TOOL, HIDDEN, INTERRUPTED, NO_ANSWER,
+                   NOTHING_TO_SAY, PAGE_SETTLE_SECONDS, REQUEST_TIMEOUT_SECONDS, STALE_SNAPSHOT, UNCHECKABLE, Agent,
+                   BrowserClosedError, BrowserStartError)
 from conftest import scratch_home
 from gate import FILE_REFUSAL, SECRET_REFUSAL, SPOKEN_LABEL_CHARACTERS
 
@@ -31,6 +44,20 @@ DIGEST_CARD = "Weekly digest" + " of new jobs" * 16 + " Subscribe"  # what the q
 ATTACHED_FILES_JS = "() => [...document.querySelector('input[type=file]').files].map((file) => file.name)"
 START_AUDIO_JS = ("() => { const audio = new Audio(); document.body.append(audio);"
                   " audio.srcObject = new AudioContext().createMediaStreamDestination().stream; return audio.play(); }")
+NUMBER_LABELS_JS = "() => { String.prototype.trim = () => 7; }"  # a page can redefine what inspect.js runs on
+BUSY_SECONDS = 3
+BUSY_JS = f"() => {{ const end = Date.now() + {BUSY_SECONDS * 1000}; while (Date.now() < end); }}"
+SHORT_CALL_TIMEOUT_SECONDS = 1
+PAGE_HEADING = "### Page"  # how every snapshot starts
+SHOWN_FIELD = re.compile(r'textbox "([^"]+)"[^\n]*\]: (.*)')  # a text field the snapshot prints a value for
+SECRETS = {"Password": 'ma"ple\\Syrup: 42', "Card": "4242424242424242", "Code": "737", "Passphrase": "open sesame"}
+PROFILE_IN_USE = "Browser is already in use"
+THOUGHT = {"type": "thinking", "thinking": "", "signature": ""}
+CALL_NUMBERS = itertools.count()
+NAMES = ("Jarvis",)
+WAKE_AND_COMMAND = "Hey Jarvis, go on."
+CONNECTION_CLOSED = "Connection closed"
+MODEL_NOT_FOUND = "model: claude-opus-5.5 was not found"
 
 
 class Element(NamedTuple):
@@ -72,6 +99,7 @@ RESUME = Element('button "Resume"')
 SUBMIT = Element('button "Submit application"')
 CLOSE_ACCOUNT = Element('button "Close account"')
 AGREE = Element('checkbox "I agree to the terms"')
+NEXT_PAGE = Element('link "Next page"')
 
 
 def click(element: Element) -> tuple[str, dict]:
@@ -90,6 +118,20 @@ def fill(values: dict[Element, str]) -> tuple[str, dict]:
 
 def press(key: str) -> tuple[str, dict]:
     return "browser_press_key", {"key": key}
+
+
+def model_reply(stop_reason: str, *content: dict) -> Message:
+    """What the API returns for one step: every reply starts with a thinking block."""
+    return Message.model_validate({"id": "msg_scripted", "type": "message", "role": "assistant", "model": NEVER_SENT,
+                                   "stop_reason": stop_reason, "usage": {"input_tokens": 0, "output_tokens": 0},
+                                   "content": [THOUGHT, *content]})
+
+
+def tool_use(tool: str, arguments: dict) -> dict:
+    return {"type": "tool_use", "id": f"toolu_{next(CALL_NUMBERS)}", "name": tool, "input": arguments}
+
+
+ALL_SET = model_reply("end_turn", {"type": "text", "text": "All set."})
 
 
 class Browser:
@@ -168,6 +210,10 @@ class Browser:
         return Page(PAGE_ADDRESS.search(self._snapshot)[1].removeprefix(self.site), log and log[1],
                     self._snapshot.count(FRAME_SENT))
 
+    def model_calls(self, tool: str, arguments: dict) -> Message:
+        """The model's reply when it asks for this one call."""
+        return model_reply("tool_use", tool_use(tool, self._aimed(arguments)))
+
     def attached_files(self) -> list[str]:
         return json.loads(EVALUATE_RESULT.search(self.call(EVALUATE_TOOL, {"function": ATTACHED_FILES_JS}))[1])
 
@@ -188,6 +234,37 @@ class Browser:
 def browser(site: str, tmp_path_factory: pytest.TempPathFactory) -> Iterator[Browser]:
     with scratch_home(tmp_path_factory.mktemp("agent")) as home, Browser(site, home) as browser:
         yield browser
+
+
+@pytest.fixture
+def model(browser: Browser, monkeypatch: pytest.MonkeyPatch) -> Iterator[Callable[..., list[dict]]]:
+    """Puts scripted replies in place of the Anthropic API. Calling it returns the list that collects every request."""
+    def play(*replies: Message) -> list[dict]:
+        requests, waiting = [], list(replies)
+
+        async def create(**request: object) -> Message:
+            requests.append(copy.deepcopy(request))  # the agent goes on editing the history it sent
+            return waiting.pop(0)
+
+        monkeypatch.setattr(browser.agent._anthropic.messages, "create", create)
+        return requests
+
+    yield play
+    browser.agent.forget()
+
+
+def pages_sent(request: dict) -> list[bool]:
+    """For each page block of a request, oldest first: whether it still holds its snapshot."""
+    texts = [block["text"] for message in request["messages"] if message["role"] == "user" for block in message["content"]
+             if block["type"] == "text"]
+    return [text != STALE_SNAPSHOT for text in texts if text == STALE_SNAPSHOT or text.startswith(PAGE_HEADING)]
+
+
+def shape(message: dict) -> tuple[str, str | list[str]]:
+    """A history message as its role and either its text or the types of its blocks."""
+    content = message["content"]
+    return message["role"], content if isinstance(content, str) else [
+        block["type"] if isinstance(block, dict) else block.type for block in content]
 
 
 def attempt_case(browser: Browser, case: Case) -> Outcome:
@@ -301,6 +378,15 @@ REFUSED = [
          {"action": "new", "url": f"https://www.{BLOCKED_HOST}/"}, returns=f"www.{BLOCKED_HOST} is blocked."),
     Case("a tool the model is never given", EVALUATE_TOOL, {"function": "() => 1"},
          returns=f"Unknown tool {EVALUATE_TOOL}."),
+    Case("fill_form with its fields as a string", "browser_fill_form", {"fields": "x"},
+         returns=UNCHECKABLE.format(error="'str' object has no attribute 'get'")),
+    Case("navigate with no address", "browser_navigate", {"url": None},
+         returns=UNCHECKABLE.format(error="expected string or bytes-like object, got 'NoneType'")),
+    Case("press a key given as a number", "browser_press_key", {"key": 7},
+         returns=UNCHECKABLE.format(error="'int' object has no attribute 'split'")),
+    Case("click on a page that turns every label into a number", *click(Element('button "Send"')),
+         before=((EVALUATE_TOOL, {"function": NUMBER_LABELS_JS}),),
+         returns=UNCHECKABLE.format(error="expected string or bytes-like object, got 'int'")),
 ]
 
 case_name = operator.attrgetter("name")
@@ -417,3 +503,199 @@ def test_closing_the_window_in_the_middle_of_a_task_raises(browser: Browser) -> 
     browser.call("browser_tabs", {"action": "close"})
     with pytest.raises(BrowserClosedError):
         browser.run(browser.agent._page())
+
+
+def test_closing_the_window_right_after_the_first_navigation_of_a_session_raises(browser: Browser) -> None:
+    browser.call("browser_tabs", {"action": "close"})
+    browser.agent._on_page = False  # as run() sets it when a command begins
+    browser.run(browser.agent._page())  # a session's first snapshot is the blank start page
+    browser.call("browser_navigate", {"url": f"{browser.site}{FORM}"})
+    browser.call("browser_tabs", {"action": "close"})
+    with pytest.raises(BrowserClosedError):
+        browser.run(browser.agent._page())
+
+
+def test_what_the_user_typed_into_secret_fields_is_hidden_from_the_page_the_model_reads(browser: Browser) -> None:
+    browser.open_form()
+    for field, typed in {**SECRETS, "Full name": "Pierce Luu"}.items():
+        browser.call(*type_into(Element(f'textbox "{field}"'), typed))
+    shown = dict(SHOWN_FIELD.findall(browser.run(browser.agent._page())))
+    assert shown == {"Full name": "Pierce Luu"} | dict.fromkeys(SECRETS, HIDDEN), f"the model would read {shown}"
+
+
+def test_a_browser_call_on_a_page_whose_script_does_not_yield_times_out(
+        browser: Browser, monkeypatch: pytest.MonkeyPatch) -> None:
+    browser.open_form()
+    monkeypatch.setattr(agent, "BROWSER_CALL_TIMEOUT_SECONDS", SHORT_CALL_TIMEOUT_SECONDS)
+    with pytest.raises(MCPError, match="timed out"):
+        browser.run(browser.agent._call(EVALUATE_TOOL, {"function": BUSY_JS}))
+
+
+def test_a_profile_already_in_use_fails_the_start_and_leaves_no_server_running(browser: Browser) -> None:
+    profile = browser.home / "profile"
+
+    def processes() -> list[str]:
+        return subprocess.run(["pgrep", "-f", str(profile)], capture_output=True, text=True).stdout.split()
+
+    async def start_second() -> None:
+        async with Agent(NEVER_SENT, profile, browser.home / "uploads", NEVER_SENT, frozenset(), browser._confirm,
+                         browser._ask, headless=True):
+            pytest.fail("a second Chrome opened on the profile the first one holds")
+
+    before = processes()
+    with pytest.raises(BrowserStartError, match=PROFILE_IN_USE):
+        browser.run(start_second())
+    after = processes()
+    assert after == before, f"the failed start left processes behind: {sorted(set(after) - set(before))}"
+
+
+def test_the_api_client_gives_up_connecting_sooner_than_it_gives_up_on_a_reply(browser: Browser) -> None:
+    timeout = browser.agent._anthropic.timeout
+    assert (timeout.connect, timeout.read) == (anthropic.DEFAULT_TIMEOUT.connect, REQUEST_TIMEOUT_SECONDS), (
+        f"an unreachable network would be silent for three attempts of {timeout}")
+
+
+def test_a_command_keeps_every_page_it_saw_and_the_next_command_drops_them(browser: Browser, model: Callable) -> None:
+    browser.open_form()
+    requests = model(browser.model_calls(*click(NEXT_PAGE)), browser.model_calls(*click(FULL_NAME)), ALL_SET, ALL_SET)
+    browser.run(browser.agent.run("open the next page and click into the name field"))
+    browser.run(browser.agent.run("thanks"))
+    kept = [pages_sent(request) for request in requests]
+    assert kept == [[True], [True, True], [True, True, True], [False, False, False, True]], (
+        f"which snapshots each request still held, oldest first: {kept}")
+    uncached = [number for number, request in enumerate(requests) if request.get("cache_control") != CACHED]
+    assert uncached == [], f"requests {uncached} re-pay the whole growing history at full price"
+
+
+def test_each_command_tells_the_model_the_local_date(browser: Browser, model: Callable) -> None:
+    browser.open_form()
+    requests = model(ALL_SET)
+    browser.run(browser.agent.run("what's the date today?"))
+    asked = requests[0]["messages"][0]["content"][0]["text"]
+    assert f"{datetime.now():%A %d %B %Y}" in asked, f"the model was only told {asked!r}"
+
+
+def test_a_reply_cut_off_at_the_token_limit_is_not_reported_as_done(browser: Browser, model: Callable) -> None:
+    browser.open_form()
+    model(model_reply("max_tokens", tool_use("browser_type", {"element": COMMENT.line})))  # the input stops before its text
+    answer = browser.run(browser.agent.run("type my whole packing list into the comment box"))
+    remembered = browser.agent._messages[-1]
+    assert answer == CUT_OFF, f"nothing was typed, yet the user heard {answer!r}"
+    assert remembered == {"role": "assistant", "content": CUT_OFF}, f"a follow-up would be answered from {remembered}"
+    assert browser.page() == UNTOUCHED, f"a call with half its arguments reached the page: {browser.page()}"
+
+
+def test_a_stop_while_the_page_settles_keeps_the_record_of_the_call_that_ran(
+        browser: Browser, model: Callable, monkeypatch: pytest.MonkeyPatch) -> None:
+    browser.open_form()
+    model(browser.model_calls(*click(NEXT_PAGE)))
+    use = browser.agent._use
+
+    async def use_then_stop(tool: str, arguments: dict) -> str:
+        result = await use(tool, arguments)
+        asyncio.current_task().cancel()  # takes effect at the next await: the wait for the page to settle
+        return result
+
+    monkeypatch.setattr(browser.agent, "_use", use_then_stop)
+    with pytest.raises(asyncio.CancelledError):
+        browser.run(browser.agent.run("open the next page"))
+    history = [shape(message) for message in browser.agent._messages]
+    assert browser.page() == Page("/form.html#next", "LOG: NEXT", 0), "the click did not run before the stop"
+    assert history == [("user", ["text", "text"]), ("assistant", ["tool_use"]), ("user", ["tool_result"]),
+                       ("user", INTERRUPTED)], f"the next command would start from {history}"
+
+
+class ScriptedEars:
+    """Stands in for voice.Ears in main: hears the given utterances and then silence, and records every spoken line."""
+
+    def __init__(self, spoken: list[str], *heard: str) -> None:
+        self._spoken, self._heard = spoken, list(heard)
+
+    async def __aenter__(self) -> "ScriptedEars":
+        return self
+
+    async def __aexit__(self, *exc_info: object) -> None:
+        pass
+
+    async def say(self, text: str) -> None:
+        self._spoken.append(text)
+
+    async def hear(self, timeout: float | None = None) -> str | None:
+        if self._heard:
+            return self._heard.pop(0)
+        await asyncio.sleep(CALL_TIMEOUT_SECONDS if timeout is None else timeout)
+
+
+class BrokenAgent:
+    """Stands in for agent.Agent in main: Chrome does not start, or it starts and every later browser call fails."""
+
+    def __init__(self, error: Exception, starts: bool) -> None:
+        self._error, self._starts = error, starts
+
+    async def __aenter__(self) -> "BrokenAgent":
+        if not self._starts:
+            raise self._error
+        return self
+
+    async def __aexit__(self, *exc_info: object) -> None:
+        pass
+
+    async def warm_up(self) -> None:
+        pass
+
+    async def run(self, command: str) -> str:
+        raise self._error
+
+    async def media_playing(self) -> bool:
+        raise self._error
+
+
+@pytest.mark.parametrize(("error", "starts", "heard", "spoken"), [
+    (BrowserStartError(f"Error: {PROFILE_IN_USE} for /profile"), False, [], [main.SPOKEN_ERRORS[BrowserStartError]]),
+    (MCPError(-32000, CONNECTION_CLOSED), True, [WAKE_AND_COMMAND],
+     [main.READY, main.ACKNOWLEDGEMENT, main.SPOKEN_ERRORS[MCPError]]),
+], ids=["the profile is in use at start-up", "the browser server dies during a command"])
+def test_a_fatal_error_is_spoken_once_and_its_reason_is_printed_on_exit(
+        monkeypatch: pytest.MonkeyPatch, error: Exception, starts: bool, heard: list[str], spoken: list[str]) -> None:
+    said: list[str] = []
+
+    async def speak(text: str, voice: str) -> None:
+        said.append(text)
+
+    monkeypatch.setattr(main, "load_config", main.Config)
+    monkeypatch.setattr(main, "Ears", lambda *settings: ScriptedEars(said, *heard))
+    monkeypatch.setattr(main, "build_agent", lambda config, ears: BrokenAgent(error, starts))
+    monkeypatch.setattr(main, "speak", speak)
+    with pytest.raises(SystemExit) as stopped:
+        asyncio.run(main.main())
+    assert said == spoken, f"the user heard {said}"
+    assert str(error) in str(stopped.value.code), f"Python prints only {stopped.value.code!r} to the terminal"
+
+
+def test_an_api_error_during_a_command_is_spoken_and_its_reason_is_printed(capsys: pytest.CaptureFixture) -> None:
+    refused = httpx2.Response(404, request=httpx2.Request("POST", "https://api.anthropic.com/v1/messages"))
+    error = anthropic.NotFoundError(MODEL_NOT_FOUND, response=refused, body=None)
+    line = asyncio.run(main.carry_out(BrokenAgent(error, starts=True), ScriptedEars([]), "go on", NAMES))
+    printed = capsys.readouterr().err
+    assert line == main.SPOKEN_ERRORS[anthropic.APIStatusError], f"the user heard {line!r}"
+    assert MODEL_NOT_FOUND in printed, f"the spoken line names no cause and the terminal shows only {printed!r}"
+
+
+@pytest.mark.parametrize(("heard", "interrupted", "outcome"), [(["Stop."], False, main.STOPPED), ([], True, None)],
+                         ids=["a spoken stop", "Ctrl-C"])
+def test_only_a_spoken_stop_ends_a_task_with_stopped(heard: list[str], interrupted: bool, outcome: str | None) -> None:
+    async def scenario() -> str | None:
+        working = asyncio.Event()
+
+        async def run(command: str) -> str:
+            working.set()
+            await asyncio.sleep(CALL_TIMEOUT_SECONDS)
+
+        task = asyncio.create_task(main.carry_out(SimpleNamespace(run=run), ScriptedEars([], *heard), "wait", NAMES))
+        await working.wait()
+        if interrupted:
+            task.cancel()  # what asyncio.run does to the conversation on Ctrl-C
+        await asyncio.wait({task})
+        return None if task.cancelled() else task.result()
+
+    assert asyncio.run(scenario()) == outcome, "a spoken stop says Stopped. and goes on; Ctrl-C must end the program"

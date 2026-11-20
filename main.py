@@ -1,5 +1,6 @@
 """Hey: say the agent's name, speak a command, watch Chrome do it."""
 import asyncio
+import sys
 import tomllib
 from dataclasses import dataclass, field, fields
 from functools import partial
@@ -119,10 +120,13 @@ async def carry_out(agent: Agent, ears: Ears, command: str, names: tuple[str, ..
         await ears.say(ACKNOWLEDGEMENT)  # overlaps the first model call
         return await work
     except asyncio.CancelledError:
-        if not work.cancelled():
+        if asyncio.current_task().cancelling():  # Ctrl-C cancels this task, a spoken stop only the work
             raise
         return STOPPED
+    except MCPError:  # the server is gone for good: main() says so once and quits
+        raise
     except tuple(SPOKEN_ERRORS) as error:
+        print(repr(error), file=sys.stderr)
         return spoken_error(error)
     finally:
         watcher.cancel()
@@ -176,9 +180,9 @@ async def main() -> None:
             await agent.warm_up()
             await ears.say(READY)
             await converse(ears, agent, config)
-    except tuple(SPOKEN_ERRORS) as error:  # only startup failures get here; carry_out speaks the rest
+    except tuple(SPOKEN_ERRORS) as error:  # startup failures and a dead browser server; carry_out speaks the rest
         await speak(spoken_error(error), config.say_voice)
-        raise SystemExit(1) from error
+        raise SystemExit(repr(error)) from error  # a string code is printed to the terminal and exits with status 1
     except Exception:
         await speak(CRASHED, config.say_voice)
         raise
