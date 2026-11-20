@@ -778,3 +778,20 @@ def test_only_a_spoken_stop_ends_a_task_with_stopped(heard: list[str], interrupt
         return None if task.cancelled() else task.result()
 
     assert asyncio.run(scenario()) == outcome, "a spoken stop says Stopped. and goes on; Ctrl-C must end the program"
+
+
+@pytest.mark.parametrize("extension_token", ["", "secret-token"], ids=["its own window", "the user's own Chrome"])
+def test_the_extension_token_decides_which_browser_the_server_drives(tmp_path: Path, extension_token: str) -> None:
+    async def never(question: str) -> bool:
+        raise AssertionError(f"asked {question!r}")
+
+    driver = Agent("claude-opus-5-5", tmp_path / "profile", tmp_path, "prompt", frozenset(), never, never,
+                  extension_token=extension_token)
+    arguments, environment = driver._server.args, driver._server.env
+    if extension_token:
+        assert "--extension" in arguments and "--user-data-dir" not in arguments, arguments
+        assert environment == {agent.EXTENSION_TOKEN_VARIABLE: extension_token}
+    else:
+        assert "--extension" not in arguments, arguments
+        assert arguments[arguments.index("--user-data-dir") + 1] == str(tmp_path / "profile"), arguments
+        assert environment is None

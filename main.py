@@ -3,7 +3,7 @@ import asyncio
 import sys
 import tomllib
 from collections.abc import Callable
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field, fields, replace
 from functools import partial
 from pathlib import Path
 
@@ -61,6 +61,7 @@ class Config:
     blocked_hosts: list[str] = field(default_factory=list)
     stt_model: str = "MEDIUM_STREAMING"
     say_voice: str = "Samantha"
+    extension_token: str = ""  # set: work in a tab of your own Chrome through the Playwright Extension
 
     @property
     def names(self) -> tuple[str, ...]:
@@ -175,12 +176,16 @@ def build_agent(config: Config, ears: Ears, headless: bool = False) -> Agent:
         uploads=", ".join(sorted(file.name for file in upload_dir.iterdir() if file.is_file())) or NO_FACTS,
         facts=facts_path.read_text() if facts_path.exists() else NO_FACTS)
     return Agent(config.model, profile_dir, upload_dir, prompt, frozenset(config.blocked_hosts),
-                 partial(confirm, ears, names=config.names), partial(ask, ears, names=config.names), headless)
+                 partial(confirm, ears, names=config.names), partial(ask, ears, names=config.names), headless,
+                 config.extension_token)
 
 
-async def main(started: Callable[[Ears], None] = lambda ears: None) -> None:
-    """Run until cancelled. started receives the Ears once the microphone is live (the menu bar switch uses it)."""
+async def main(started: Callable[[Ears], None] = lambda ears: None, in_my_chrome: bool = True) -> None:
+    """Run until cancelled. started receives the Ears once the microphone is live; in_my_chrome False ignores the
+    extension token and uses the separate window (both are the menu bar's switches)."""
     config = load_config()
+    if not in_my_chrome:
+        config = replace(config, extension_token="")
     try:
         async with Ears(config.stt_model, [config.agent_name], config.say_voice) as ears, build_agent(config, ears) as agent:
             started(ears)

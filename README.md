@@ -1,6 +1,16 @@
-# Beacon
+<p align="center">
+  <img src="logo.png" width="96" alt="Beacon logo: a small bird in a white rounded square">
+</p>
+<h1 align="center"><code>beacon</code></h1>
+<p align="center"><b>Say its name, speak a command, watch Chrome do it.</b></p>
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="MIT license"></a>
+  <img src="https://img.shields.io/badge/macOS-Apple%20silicon-lightgrey" alt="macOS on Apple silicon">
+  <img src="https://img.shields.io/badge/python-3.12-blue" alt="Python 3.12">
+</p>
 
-Say "Hey Beacon", speak a command, and watch a real Chrome window carry it out.
+Beacon is a voice assistant that drives a real, visible Chrome window. Say "Hey Beacon", speak a command, and watch
+it navigate, type and click. Speech runs on your Mac; the only paid service is the Anthropic API.
 
 ```
 You:    "Hey Beacon."
@@ -24,9 +34,15 @@ The first run asks for microphone access for your terminal and opens a Chrome wi
 (`~/.beacon/chrome-profile`). Log in to the sites you want it to use in that window once; the logins persist.
 When you hear "Ready", say "Hey Beacon".
 
-A menu bar icon appears at the top right while it runs: `…` while starting, `◉` when listening, `○` when not.
-Click it and choose **Listening** to switch the microphone off or on; while off, nothing is heard or transcribed,
-and a running task cannot be stopped by voice. **Quit Beacon** closes the browser and exits, as does Ctrl-C.
+A bird icon appears in the menu bar at the top right while it runs. Click it for:
+
+- **Mute**: stops the microphone; nothing is heard or transcribed, and a running task cannot be stopped by voice.
+- **Turn Off / Turn On**: closes the browser and the microphone but keeps the icon, so you can start it again.
+- **Browser**: **Separate window** (its own Chrome profile) or **My Chrome** (needs `extension_token`, see below).
+  Switching restarts Beacon; the choice is not saved, and it starts in My Chrome whenever a token is set.
+- **Quit Beacon**: closes everything and exits, as does Ctrl-C.
+
+The small text beside the bird says `…` while starting, `muted` or `off`.
 
 - Say the name and the command in one breath, or say the name, wait for "Hi Pierce", then speak.
 - After it answers you have 8 seconds to give a follow-up without the name, unless a video or audio is playing:
@@ -77,6 +93,29 @@ Chrome is only read, never controlled.
   `blocked_hosts` only the site's name is sent; for a local file, a `chrome://` page or another address it may
   not open, only the reason.
 
+## Work in your own Chrome (opt-in)
+
+By default Beacon drives its own Chrome window with its own logins. To have it work in a tab of the Chrome you
+already use, with your logins:
+
+1. Install the Playwright Extension from the Chrome Web Store:
+   `https://chromewebstore.google.com/detail/playwright-extension/mmlmfjhmonkocbjadbfplnigmagldckm`
+2. Click its toolbar icon and copy the value after `PLAYWRIGHT_MCP_EXTENSION_TOKEN=`.
+3. Put `extension_token = "..."` in `~/.beacon/config.toml`, then `chmod 600 ~/.beacon/config.toml`.
+
+Beacon then opens one tab in your Chrome (in a "Playwright" tab group) and works there. Know what you are
+trading:
+
+- Every site you are logged in to is in reach, including email and banking. `blocked_hosts` and the spoken
+  question are the only things between a hostile page and your accounts.
+- The token lets any program on this Mac attach to your Chrome without asking. Rotate it on the extension's page
+  if it leaks.
+- Chrome shows a "started debugging this browser" banner while Beacon runs.
+- Do not switch tabs in the window Beacon is working in; use another window. Each start leaves its tab behind.
+- A wrong token fails after 30 seconds with a spoken error.
+
+This mode passed the gate tests on a stand-in Chrome. It has not been tried on a real everyday profile.
+
 ## Configuration
 
 Optional, in `~/.beacon/config.toml`. Unknown keys are an error.
@@ -93,6 +132,7 @@ Optional, in `~/.beacon/config.toml`. Unknown keys are an error.
 | `blocked_hosts` | `[]` | Sites it may never navigate to, for example your bank. Links and redirects that land there are not checked. |
 | `stt_model` | `"MEDIUM_STREAMING"` | Or `"SMALL_STREAMING"` (less memory, slightly less accurate). |
 | `say_voice` | `"Samantha"` | Any voice from `say -v '?'`. |
+| `extension_token` | `""` | Set it to work in your own Chrome through the Playwright Extension (see above). |
 
 ## How it works
 
@@ -105,7 +145,7 @@ Optional, in `~/.beacon/config.toml`. Unknown keys are an error.
 | `inspect.js` | Runs in the page to describe the element a click or key press would hit, so the gate judges the real DOM, not the model's description. |
 | `everyday.py` | Reads the address and title of the front tab of your everyday Chrome when that Chrome is the app in front. |
 | `front_tab.js` | The macOS script `everyday.py` runs. It addresses the Chrome in front by process id, because every Chrome answers to the same name. |
-| `menubar.py` | The menu bar icon with the Listening switch. |
+| `menubar.py`, `menubar.swift`, `bird.png` | The menu bar icon and its menu. macOS 26 does not show a menu bar item made by Python, so a small native helper shows it; it is compiled on first run and needs the Xcode command line tools (`xcode-select --install`). |
 | `prompt.txt` | The system prompt. |
 
 ## Tests
