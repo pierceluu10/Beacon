@@ -22,8 +22,9 @@ from conftest import CLIPS, FACTS, scratch_home
 from main import ACKNOWLEDGEMENT, STOPPED, Config, build_agent, converse
 from voice import Ears
 
-pytestmark = pytest.mark.skipif(os.environ.get("RUN_LIVE") != "1",
-                                reason="calls the paid Anthropic API and live YouTube; set RUN_LIVE=1 to run")
+pytestmark = [pytest.mark.skipif(os.environ.get("RUN_LIVE") != "1",
+                                 reason="calls the paid Anthropic API and live YouTube; set RUN_LIVE=1 to run"),
+              pytest.mark.usefixtures("front")]  # the developer's real front tab must not reach the API
 
 SILENT_SAY = "/usr/bin/true"  # the agent's lines are captured, not played
 PAUSE_SECONDS = 2.5  # before the user speaks: outlasts transcription plus main.CONTINUATION_SECONDS, so clips are not joined
@@ -50,6 +51,9 @@ JOBS = "jobs.html"  # two postings titled Software Engineer
 QUESTIONS = "questions.html"  # four required answers that conftest.FACTS does not hold
 TOPICS = ("experience", "salary", "hear", "start date")
 SKIPPED = "Skip that one."
+EVERYDAY_TAB = ("https://example.com/", "Example Domain")  # in front in the stand-in everyday browser
+EVERYDAY_HOST = "example.com"
+EVERYDAY_WORDS = ("example", "documentation")  # what that page is about
 DOLLARS_PER_MILLION_TOKENS = {  # claude-opus-5-5, the model Config defaults to
     "input_tokens": 4.0, "cache_read_input_tokens": 0.2, "cache_creation_input_tokens": 5.0, "output_tokens": 20.0}
 TOKENS_PER_MILLION = 1_000_000
@@ -357,3 +361,28 @@ class TestYouTube:
         bundled = [question for question in youtube.questions if sum(topic in question.lower() for topic in TOPICS) > 1]
         print(f"asked {youtube.questions}\n  answer: {answer!r}")
         assert youtube.questions and not bundled, f"one spoken answer cannot cover {bundled}; it asked {youtube.questions}"
+
+    @pytest.mark.parametrize(("command", "arrives", "opens_it"), [
+        ("what is this page about?", EVERYDAY_HOST, True),
+        ("go to YouTube and search for lo-fi", "youtube.com/results", False),
+    ], ids=["this page is the one in front in the everyday browser", "a command about something else leaves it alone"])
+    def test_the_everyday_page_is_opened_only_when_the_command_is_about_it(
+            self, runner: asyncio.Runner, youtube: SimpleNamespace, site: str, front: SimpleNamespace,
+            monkeypatch: pytest.MonkeyPatch, command: str, arrives: str, opens_it: bool):
+        addresses: list[str] = []
+        use = youtube.agent._use
+
+        async def recording_use(tool: str, arguments: dict) -> str:
+            addresses.append(str(arguments.get("url")))
+            return await use(tool, arguments)
+
+        monkeypatch.setattr(youtube.agent, "_use", recording_use)
+        front.tab = EVERYDAY_TAB
+        youtube.agent.forget()
+        runner.run(youtube.agent._call("browser_navigate", {"url": f"{site}/{JOBS}"}))
+        answer = runner.run(youtube.agent.run(command))
+        arrived = runner.run(page_value(youtube.agent, ADDRESS_JS))
+        opened = any(EVERYDAY_HOST in address for address in addresses)
+        print(f"{command!r}: opened {addresses}\n  answer: {answer!r}\n  page: {arrived}")
+        assert opened == opens_it and arrives in arrived, f"it opened {addresses} and is on {arrived}; it answered {answer!r}"
+        assert not opens_it or any(word in answer.lower() for word in EVERYDAY_WORDS), f"asked about the page, it said {answer!r}"

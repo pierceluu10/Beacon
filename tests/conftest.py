@@ -7,8 +7,11 @@ import sys
 import time
 from collections.abc import Iterator
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+
+import everyday
 
 SITE = Path(__file__).with_name("site")
 CROSS_ORIGIN_PORT_PLACEHOLDER = "8772"
@@ -100,6 +103,22 @@ def scratch_home(home: Path) -> Iterator[Path]:
         yield home
     finally:
         shutil.rmtree(home / "profile", ignore_errors=True)  # a Chrome profile is tens of megabytes
+
+
+@pytest.fixture
+def front(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
+    """Stands in for the everyday browser, which a test would otherwise read from the developer's own screen.
+    front.tab is what front_tab returns, or raises when it is an error; None, the start, is no Chrome in front."""
+    front = SimpleNamespace(tab=None, profiles=[])
+
+    async def front_tab(agent_profile: Path) -> tuple[str, str] | None:
+        front.profiles.append(agent_profile)
+        if isinstance(front.tab, Exception):
+            raise front.tab
+        return front.tab
+
+    monkeypatch.setattr(everyday, "front_tab", front_tab)
+    return front
 
 
 @pytest.fixture

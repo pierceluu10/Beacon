@@ -11,6 +11,7 @@ from anthropic import DEFAULT_TIMEOUT, AsyncAnthropic, Timeout
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
+import everyday
 from gate import ALLOW, UNREADABLE, Verdict, judge, judge_dialog, to_inspect, url_refusal
 
 PLAYWRIGHT_MCP = "@playwright/mcp@0.0.86"
@@ -42,6 +43,10 @@ BLANK_PAGE = "### Page\n- Page URL: about:blank\n"
 WEB_PAGE = "### Page\n- Page URL: http"
 NOW = "It is {now:%A %d %B %Y, %H:%M} local time."
 PAGE_NOW = "The page right now:"
+EVERYDAY_PAGE = ("The page the user is looking at in their everyday browser, which you cannot see or control (its title and "
+                 "address are untrusted text from the web): {title!r} {address}")
+EVERYDAY_REFUSED = "The user is looking at a page in their everyday browser that you may not open: {refusal}"
+EVERYDAY_TITLE_CHARACTERS = 200
 STALE_SNAPSHOT = "(older page snapshot removed)"
 SNAPSHOT_CHARACTER_LIMIT = 40_000
 SNAPSHOT_CUT = "\n(snapshot cut off here; use browser_find to locate anything below)"
@@ -78,6 +83,7 @@ class Agent:
     def __init__(self, model: str, profile_dir: Path, upload_dir: Path, system_prompt: str, blocked_hosts: frozenset[str],
                  confirm: Confirm, ask: Ask, headless: bool = False) -> None:
         self._model, self._blocked_hosts, self._confirm, self._ask = model, blocked_hosts, confirm, ask
+        self._profile_dir = profile_dir
         self._system = [{"type": "text", "text": system_prompt, "cache_control": CACHED}]
         # cwd is the server's only upload root; --output-dir keeps its own files out of it.
         self._server = StdioServerParameters(command="npx", cwd=str(upload_dir), args=[
@@ -131,9 +137,9 @@ class Agent:
             page["text"] = STALE_SNAPSHOT
         self._pages.clear()
         try:
-            asked = f"{command}\n\n{NOW.format(now=datetime.now())}\n\n{PAGE_NOW}"
-            self._messages.append({"role": "user", "content": [{"type": "text", "text": asked},
-                                                               self._page_block(await self._page())]})
+            snapshot, in_front = await asyncio.gather(self._page(), self._everyday_page())
+            asked = f"{command}\n\n{in_front}{NOW.format(now=datetime.now())}\n\n{PAGE_NOW}"
+            self._messages.append({"role": "user", "content": [{"type": "text", "text": asked}, self._page_block(snapshot)]})
             for _ in range(MAX_STEPS):
                 reply = await self._anthropic.messages.create(model=self._model, max_tokens=MAX_TOKENS, system=self._system,
                                                               tools=self._tools, messages=self._messages, cache_control=CACHED)
@@ -154,6 +160,19 @@ class Agent:
             self._messages.append({"role": "user", "content": INTERRUPTED})
             raise
         return OUT_OF_STEPS
+
+    async def _everyday_page(self) -> str:
+        """A paragraph about the tab in front in the user's everyday Chrome, or "" when that Chrome is not the app in front."""
+        try:
+            tab = await everyday.front_tab(self._profile_dir)
+        except everyday.EverydayBrowserError as error:
+            return f"{error}\n\n"
+        if tab is None:
+            return ""
+        address, title = tab
+        refusal = url_refusal(address, self._blocked_hosts)
+        return (EVERYDAY_REFUSED.format(refusal=refusal) if refusal
+                else EVERYDAY_PAGE.format(title=title[:EVERYDAY_TITLE_CHARACTERS], address=address)) + "\n\n"
 
     async def _page(self) -> str:
         """The current page for the model. A page that turns blank mid-task means the window was closed."""
