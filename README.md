@@ -145,7 +145,7 @@ Optional, in `~/.beacon/config.toml`. Unknown keys are an error.
 | `inspect.js` | Runs in the page to describe the element a click or key press would hit, so the gate judges the real DOM, not the model's description. |
 | `everyday.py` | Reads the address and title of the front tab of your everyday Chrome when that Chrome is the app in front. |
 | `front_tab.js` | The macOS script `everyday.py` runs. It addresses the Chrome in front by process id, because every Chrome answers to the same name. |
-| `menubar.py`, `bird.png` | The menu bar icon and its menu. |
+| `menubar.py`, `menubar.swift`, `bird.png` | The menu bar icon and its menu. macOS 26 does not show a menu bar item made by Python, so a small native helper shows it; it is compiled on first run and needs the Xcode command line tools (`xcode-select --install`). |
 | `prompt.txt` | The system prompt. |
 
 ## Tests
