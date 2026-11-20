@@ -415,6 +415,21 @@ def test_speech_nobody_was_listening_for_is_not_delivered_later(ears, run, user_
     assert stale is None, f"a listener that arrived after the speech still got {stale!r}"
 
 
+def test_nothing_is_heard_while_listening_is_switched_off_even_after_a_spoken_line(ears, run, user_says, heard):
+    async def scenario() -> str | None:
+        ears.set_listening(False)
+        await ears.say("Ready.")  # speaking must not switch the microphone back on
+        await asyncio.sleep(user_says("yes") + LINE_END_SECONDS)
+        return await ears.hear(SILENCE_SECONDS)
+
+    try:
+        muted = run(scenario())
+    finally:
+        ears.set_listening(True)
+    assert muted is None, f"heard {muted!r} with listening switched off"
+    assert voice.parse_yes_no(heard("yes")), "nothing heard after listening was switched back on"
+
+
 def test_newest_listener_gets_the_utterance_and_the_older_one_the_next(ears, run, user_says):
     async def scenario() -> None:
         watcher = asyncio.create_task(ears.hear())

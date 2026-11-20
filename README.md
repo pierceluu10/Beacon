@@ -24,6 +24,10 @@ The first run asks for microphone access for your terminal and opens a Chrome wi
 (`~/.beacon/chrome-profile`). Log in to the sites you want it to use in that window once; the logins persist.
 When you hear "Ready", say "Hey Beacon".
 
+A menu bar icon appears at the top right while it runs: `…` while starting, `◉` when listening, `○` when not.
+Click it and choose **Listening** to switch the microphone off or on; while off, nothing is heard or transcribed,
+and a running task cannot be stopped by voice. **Quit Beacon** closes the browser and exits, as does Ctrl-C.
+
 - Say the name and the command in one breath, or say the name, wait for "Hi Pierce", then speak.
 - After it answers you have 8 seconds to give a follow-up without the name, unless a video or audio is playing:
   then say the name again, so the video's speech is not taken as a command.
@@ -101,6 +105,7 @@ Optional, in `~/.beacon/config.toml`. Unknown keys are an error.
 | `inspect.js` | Runs in the page to describe the element a click or key press would hit, so the gate judges the real DOM, not the model's description. |
 | `everyday.py` | Reads the address and title of the front tab of your everyday Chrome when that Chrome is the app in front. |
 | `front_tab.js` | The macOS script `everyday.py` runs. It addresses the Chrome in front by process id, because every Chrome answers to the same name. |
+| `menubar.py` | The menu bar icon with the Listening switch. |
 | `prompt.txt` | The system prompt. |
 
 ## Tests
