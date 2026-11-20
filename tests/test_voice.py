@@ -12,7 +12,7 @@ import main
 import voice
 from voice import Ears, MicrophoneSilentError, check_microphone, is_dismissal, is_stop, parse_yes_no, wake_command
 
-CONFIG = main.Config()
+CONFIG = main.Config(agent_name="Jarvis")  # the clips and the near-miss names are built around this name
 NAMES = (CONFIG.agent_name,)
 SILENT_SAY = "/usr/bin/true"
 SHORT_ECHO_TAIL_SECONDS = 0.05

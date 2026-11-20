@@ -1,4 +1,4 @@
-"""Hey: say the agent's name, speak a command, watch Chrome do it."""
+"""Beacon: say the agent's name, speak a command, watch Chrome do it."""
 import asyncio
 import sys
 import tomllib
@@ -13,7 +13,7 @@ from mcp import MCPError
 from agent import Agent, BrowserClosedError, BrowserStartError
 from voice import Ears, MicrophoneSilentError, is_dismissal, is_stop, parse_yes_no, speak, wake_command
 
-HOME = Path("~/.hey").expanduser()
+HOME = Path("~/.beacon").expanduser()
 CONFIG_PATH = HOME / "config.toml"
 CONTINUATION_SECONDS = 0.8  # a pause mid-sentence puts 0.47 to 0.52 s between its two transcripts; 0.6 missed some under load
 FOLLOW_UP_SECONDS = 8
@@ -50,7 +50,7 @@ class ConfigError(ValueError):
 
 @dataclass(frozen=True)
 class Config:
-    agent_name: str = "Jarvis"
+    agent_name: str = "Beacon"
     wake_aliases: list[str] = field(default_factory=list)
     user_name: str = "Pierce"
     model: str = "claude-opus-5-5"

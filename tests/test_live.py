@@ -103,7 +103,7 @@ def on_loop(method: Callable[..., Coroutine]) -> Callable:
 
 
 def config_in(home: Path) -> Config:
-    return Config(profile_dir=str(home / "profile"), resume_path=str(home / "uploads" / "resume.pdf"),
+    return Config(agent_name="Jarvis", profile_dir=str(home / "profile"), resume_path=str(home / "uploads" / "resume.pdf"),
                   facts_path=str(home / "facts.md"))
 
 

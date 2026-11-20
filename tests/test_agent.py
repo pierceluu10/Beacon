@@ -59,8 +59,8 @@ SECRETS = {"Password": 'ma"ple\\Syrup: 42', "Card": "4242424242424242", "Code": 
 PROFILE_IN_USE = "Browser is already in use"
 THOUGHT = {"type": "thinking", "thinking": "", "signature": ""}
 CALL_NUMBERS = itertools.count()
-NAMES = ("Jarvis",)
-WAKE_AND_COMMAND = "Hey Jarvis, go on."
+NAMES = (main.Config().agent_name,)
+WAKE_AND_COMMAND = f"Hey {NAMES[0]}, go on."
 CONNECTION_CLOSED = "Connection closed"
 MODEL_NOT_FOUND = "model: claude-opus-5.5 was not found"
 POSTING = "https://jobs.example/postings/41?source=feed"

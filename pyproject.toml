@@ -1,5 +1,5 @@
 [project]
-name = "hey"
+name = "beacon"
 version = "0.1.0"
 description = "Say the agent's name, speak a command, watch Chrome do it."
 requires-python = ">=3.12,<3.13"

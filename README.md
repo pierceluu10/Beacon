@@ -1,13 +1,13 @@
-# Hey
+# Beacon
 
-Say "Hey Jarvis", speak a command, and watch a real Chrome window carry it out.
+Say "Hey Beacon", speak a command, and watch a real Chrome window carry it out.
 
 ```
-You:    "Hey Jarvis."
-Jarvis: "Hi Pierce."
+You:    "Hey Beacon."
+Beacon: "Hi Pierce."
 You:    "Go to YouTube and search for lo-fi hip hop radio."
-Jarvis: "On it."            (Chrome navigates, types and clicks while you watch)
-Jarvis: "The results are up. The first one is a live stream."
+Beacon: "On it."            (Chrome navigates, types and clicks while you watch)
+Beacon: "The results are up. The first one is a live stream."
 ```
 
 Speech recognition and speech output run on this Mac. The only paid service is the Anthropic API.
@@ -21,15 +21,15 @@ uv run python main.py
 ```
 
 The first run asks for microphone access for your terminal and opens a Chrome window with its own profile
-(`~/.hey/chrome-profile`). Log in to the sites you want it to use in that window once; the logins persist.
-When you hear "Ready", say "Hey Jarvis".
+(`~/.beacon/chrome-profile`). Log in to the sites you want it to use in that window once; the logins persist.
+When you hear "Ready", say "Hey Beacon".
 
 - Say the name and the command in one breath, or say the name, wait for "Hi Pierce", then speak.
 - After it answers you have 8 seconds to give a follow-up without the name, unless a video or audio is playing:
   then say the name again, so the video's speech is not taken as a command.
-- Say "stop" while it is working, or as the answer to one of its questions, to cancel; "Stop, Jarvis" and
+- Say "stop" while it is working, or as the answer to one of its questions, to cancel; "Stop, Beacon" and
   "Stop! Stop!" work too. "Thanks" or silence ends the exchange, and so does "stop" when nothing is running: to
-  stop a video, say "Hey Jarvis, pause the video".
+  stop a video, say "Hey Beacon, pause the video".
 - It asks out loud before anything that submits, sends, pays, books, posts or deletes: a button or short link whose
   label says so, a form's own button labelled apply, complete, order, payment or booking, a button it can read no name
   for ("this button"), and Enter in a field that is not a search box. Only a short plain yes ("yes", "yeah", "sure", "go ahead", "do it")
@@ -46,18 +46,18 @@ When you hear "Ready", say "Hey Jarvis".
 
 ## Job applications
 
-1. Put your resume at `~/.hey/uploads/resume.pdf`. Every file in that folder can be attached by the agent, so
+1. Put your resume at `~/.beacon/uploads/resume.pdf`. Every file in that folder can be attached by the agent, so
    keep only files you are happy to send.
-2. Write `~/.hey/facts.md` in plain text: name, email, phone, links, location, work authorization, notice
+2. Write `~/.beacon/facts.md` in plain text: name, email, phone, links, location, work authorization, notice
    period, salary expectations. It answers form questions only from this file and what you say; anything
    missing, it asks you. No passwords.
-3. Open the job posting in your own Chrome or in its window (or tell it the address) and say "Hey Jarvis, apply to
+3. Open the job posting in your own Chrome or in its window (or tell it the address) and say "Hey Beacon, apply to
    this job with my resume".
 
 ## Summon it to the page you're on
 
-With a page open in your everyday Chrome and that Chrome in front, say "Hey Jarvis, apply to this job" or "Hey
-Jarvis, what is this page about?". It opens the same address in its own window and works there. Your everyday
+With a page open in your everyday Chrome and that Chrome in front, say "Hey Beacon, apply to this job" or "Hey
+Beacon, what is this page about?". It opens the same address in its own window and works there. Your everyday
 Chrome is only read, never controlled.
 
 - The first time, macOS asks whether your terminal may control Google Chrome. Click Allow and say the command
@@ -75,17 +75,17 @@ Chrome is only read, never controlled.
 
 ## Configuration
 
-Optional, in `~/.hey/config.toml`. Unknown keys are an error.
+Optional, in `~/.beacon/config.toml`. Unknown keys are an error.
 
 | Key | Default | Meaning |
 |---|---|---|
-| `agent_name` | `"Jarvis"` | The wake name, one word. Any name works; no training. |
+| `agent_name` | `"Beacon"` | The wake name, one word. Any name works; no training. |
 | `wake_aliases` | `[]` | Other spellings the recogniser produces for your name. |
 | `user_name` | `"Pierce"` | Used in the greeting. |
 | `model` | `"claude-opus-5-5"` | Any Anthropic model id. The tests run on the default; `claude-sonnet-5-5` was tried by hand on multi-step tasks. |
-| `profile_dir` | `"~/.hey/chrome-profile"` | The agent's own Chrome profile. |
-| `resume_path` | `"~/.hey/uploads/resume.pdf"` | "My resume". Its folder is the only place uploads can come from. |
-| `facts_path` | `"~/.hey/facts.md"` | Facts about you for forms. |
+| `profile_dir` | `"~/.beacon/chrome-profile"` | The agent's own Chrome profile. |
+| `resume_path` | `"~/.beacon/uploads/resume.pdf"` | "My resume". Its folder is the only place uploads can come from. |
+| `facts_path` | `"~/.beacon/facts.md"` | Facts about you for forms. |
 | `blocked_hosts` | `[]` | Sites it may never navigate to, for example your bank. Links and redirects that land there are not checked. |
 | `stt_model` | `"MEDIUM_STREAMING"` | Or `"SMALL_STREAMING"` (less memory, slightly less accurate). |
 | `say_voice` | `"Samantha"` | Any voice from `say -v '?'`. |
@@ -134,7 +134,7 @@ No test needs a microphone or a person: clips are made with `say` and fed throug
 - It opens only plain `http://` and `https://` addresses: no user names, escapes or non-English letters in the
   site name. `localhost` and numeric addresses of this machine or your home network are refused; a site name
   that resolves to this machine is not checked.
-- It cannot hear you while it is speaking. After a bare "Hey Jarvis", say the command in the same breath or wait
+- It cannot hear you while it is speaking. After a bare "Hey Beacon", say the command in the same breath or wait
   for "Hi Pierce": a command begun a second or two after the name is talked over, and only its end is acted on.
 - A pause longer than about a second in the middle of a command cuts the command off.
 - The prompt tells it not to automate LinkedIn (its terms forbid it). Nothing in code enforces that; add
