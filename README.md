@@ -26,13 +26,16 @@ When you hear "Ready", say "Hey Jarvis".
 
 - Say the name and the command in one breath, or say the name, wait for "Hi Pierce", then speak.
 - After it answers you have 8 seconds to give a follow-up without the name.
-- Say "stop" while it is working to cancel; "Stop, Jarvis" and "Stop! Stop!" work too. "Thanks" or silence ends
-  the exchange, and so does "stop" when nothing is running: to stop a video, say "Hey Jarvis, pause the video".
+- Say "stop" while it is working, or as the answer to one of its questions, to cancel; "Stop, Jarvis" and
+  "Stop! Stop!" work too. "Thanks" or silence ends the exchange, and so does "stop" when nothing is running: to
+  stop a video, say "Hey Jarvis, pause the video".
 - It asks out loud before anything that submits, sends, pays, books, posts or deletes: any control whose label
-  says so, the button of every form except a search form whatever its label, and Enter in a form. Only a plain
-  "yes", "go ahead" or "do it" goes ahead; an unclear answer is asked once more, and silence means no.
-- It never types passwords, card numbers or verification codes, and never solves CAPTCHAs. It asks you to do
-  those in the window, press the page's own sign-in or pay button yourself, and say "continue".
+  says so, a form's own button labelled apply, complete, order, payment or booking, a button it can read no name
+  for ("this button"), and Enter in a field that is not a search box. Only a plain "yes", "go ahead" or "do it"
+  goes ahead; an unclear answer is asked once more, and silence means no.
+- It is told never to type passwords, card numbers or verification codes and never to solve CAPTCHAs, and the
+  gate refuses the fields it recognises as such (see Limits). It asks you to do those in the window, press the
+  page's own sign-in or pay button yourself, and say "continue".
 - When a command has a real fork (two postings with the same title, two saved addresses) and the choice is not
   cheaply undone, it asks which you mean. Otherwise it picks the likeliest and tells you which. It asks one
   question at a time.
@@ -88,17 +91,27 @@ No test needs a microphone or a person: clips are made with `say` and fed throug
 
 ## Limits
 
-- Outside a form's own button, the gate reads labels the page wrote. A hostile page can label a pay button
-  "Next"; you watching the window is the last defence. Keep banking and your main email out of this profile.
-- It opens only plain `http://` and `https://` addresses of public sites: no user names, escapes or non-English
-  letters in the site name, and nothing on this machine or your home network.
+- The gate reads the labels the page wrote. A form's Next, Continue, Save or Sign in button is pressed without
+  a question, also when it is the step that places an order, and a hostile page can label a pay button "Next".
+  The prompt tells the model to ask you first when it suspects such a step; you watching the window is the last
+  defence. Keep banking and your main email out of this profile.
+- The gate cannot read text a page draws with CSS. A button named only that way is asked about as "this button"
+  without its name, and a link named only that way is followed without a question.
+- A field whose name, label or placeholder says "search" counts as a search box, so Enter in it is not asked
+  about, even inside a longer form.
+- A password, card or code field is recognised only by `type=password` or an `autocomplete` of
+  `current-password`, `one-time-code` or `cc-...`. The prompt forbids typing passwords, card numbers and codes
+  anywhere; the gate is the backstop, and a card or code box without those marks is an ordinary field to it.
+- What you type into a field recognised that way is hidden from the page text sent to the API, but only for
+  fields of the page itself: not inside embedded frames (most card forms), and not in the results of a search of
+  the page. Press the page's own button before you say "continue", so nothing is left in the field.
+- It opens only plain `http://` and `https://` addresses: no user names, escapes or non-English letters in the
+  site name. `localhost` and numeric addresses of this machine or your home network are refused; a site name
+  that resolves to this machine is not checked.
 - It cannot hear you while it is speaking. After a bare "Hey Jarvis", say the command in the same breath or wait
   for "Hi Pierce": a command begun a second or two after the name is talked over, and only its end is acted on.
 - A pause longer than about a second in the middle of a command cuts the command off.
 - LinkedIn is off limits by design (its terms forbid automation).
-- What you type into a password, card or code field is hidden from the page text sent to the API, but only for
-  fields of the page itself: not inside embedded frames (most card forms), and not in the results of a search of
-  the page. Press the page's own button before you say "continue", so nothing is left in the field.
 - A browser call that gets no answer for 45 seconds (a frozen page), or a browser server that dies, ends the
   program with one spoken line. Start it again.
 - A command stops after 40 steps, and a single step that needs more than about 1,400 words of writing is cut off
