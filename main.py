@@ -3,7 +3,7 @@ import asyncio
 import sys
 import tomllib
 from collections.abc import Callable
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field, fields, replace
 from functools import partial
 from pathlib import Path
 
@@ -180,9 +180,12 @@ def build_agent(config: Config, ears: Ears, headless: bool = False) -> Agent:
                  config.extension_token)
 
 
-async def main(started: Callable[[Ears], None] = lambda ears: None) -> None:
-    """Run until cancelled. started receives the Ears once the microphone is live (the menu bar switch uses it)."""
+async def main(started: Callable[[Ears], None] = lambda ears: None, in_my_chrome: bool = True) -> None:
+    """Run until cancelled. started receives the Ears once the microphone is live; in_my_chrome False ignores the
+    extension token and uses the separate window (both are the menu bar's switches)."""
     config = load_config()
+    if not in_my_chrome:
+        config = replace(config, extension_token="")
     try:
         async with Ears(config.stt_model, [config.agent_name], config.say_voice) as ears, build_agent(config, ears) as agent:
             started(ears)

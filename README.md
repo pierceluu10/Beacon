@@ -1,6 +1,16 @@
-# Beacon
+<p align="center">
+  <img src="logo.png" width="96" alt="Beacon logo: a small bird in a white rounded square">
+</p>
+<h1 align="center"><code>beacon</code></h1>
+<p align="center"><b>Say its name, speak a command, watch Chrome do it.</b></p>
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="MIT license"></a>
+  <img src="https://img.shields.io/badge/macOS-Apple%20silicon-lightgrey" alt="macOS on Apple silicon">
+  <img src="https://img.shields.io/badge/python-3.12-blue" alt="Python 3.12">
+</p>
 
-Say "Hey Beacon", speak a command, and watch a real Chrome window carry it out.
+Beacon is a voice assistant that drives a real, visible Chrome window. Say "Hey Beacon", speak a command, and watch
+it navigate, type and click. Speech runs on your Mac; the only paid service is the Anthropic API.
 
 ```
 You:    "Hey Beacon."
@@ -24,9 +34,15 @@ The first run asks for microphone access for your terminal and opens a Chrome wi
 (`~/.beacon/chrome-profile`). Log in to the sites you want it to use in that window once; the logins persist.
 When you hear "Ready", say "Hey Beacon".
 
-A menu bar icon appears at the top right while it runs: `…` while starting, `◉` when listening, `○` when not.
-Click it and choose **Listening** to switch the microphone off or on; while off, nothing is heard or transcribed,
-and a running task cannot be stopped by voice. **Quit Beacon** closes the browser and exits, as does Ctrl-C.
+A bird icon appears in the menu bar at the top right while it runs. Click it for:
+
+- **Mute**: stops the microphone; nothing is heard or transcribed, and a running task cannot be stopped by voice.
+- **Turn Off / Turn On**: closes the browser and the microphone but keeps the icon, so you can start it again.
+- **Browser**: **Separate window** (its own Chrome profile) or **My Chrome** (needs `extension_token`, see below).
+  Switching restarts Beacon; the choice is not saved, and it starts in My Chrome whenever a token is set.
+- **Quit Beacon**: closes everything and exits, as does Ctrl-C.
+
+The small text beside the bird says `…` while starting, `muted` or `off`.
 
 - Say the name and the command in one breath, or say the name, wait for "Hi Pierce", then speak.
 - After it answers you have 8 seconds to give a follow-up without the name, unless a video or audio is playing:
@@ -129,7 +145,7 @@ Optional, in `~/.beacon/config.toml`. Unknown keys are an error.
 | `inspect.js` | Runs in the page to describe the element a click or key press would hit, so the gate judges the real DOM, not the model's description. |
 | `everyday.py` | Reads the address and title of the front tab of your everyday Chrome when that Chrome is the app in front. |
 | `front_tab.js` | The macOS script `everyday.py` runs. It addresses the Chrome in front by process id, because every Chrome answers to the same name. |
-| `menubar.py` | The menu bar icon with the Listening switch. |
+| `menubar.py`, `bird.png` | The menu bar icon and its menu. |
 | `prompt.txt` | The system prompt. |
 
 ## Tests
