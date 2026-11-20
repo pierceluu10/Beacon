@@ -35,7 +35,7 @@ MEDIA_PLAYING_JS = "() => [...document.querySelectorAll('video, audio')].some((m
 EVALUATE_RESULT = re.compile(r"### Result\n(.*?)(?=\n###|\Z)", re.DOTALL)
 MEDIA_PLAYING_RESULT = "### Result\ntrue"
 SECRET_VALUES_JS = ("() => [...document.querySelectorAll('input[type=password], input[autocomplete*=cc- i], "
-                    "input[autocomplete*=one-time-code i], input[autocomplete*=-password i]')]"
+                    "input[autocomplete*=one-time-code i], input[autocomplete*=current-password i]')]"
                     ".map((input) => input.value).filter(Boolean)")
 HIDDEN = "(hidden)"
 BLANK_PAGE = "### Page\n- Page URL: about:blank\n"

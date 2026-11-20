@@ -26,7 +26,7 @@ from agent import (CACHED, CUT_OFF, DECLINED, EVALUATE_RESULT, EVALUATE_TOOL, HI
                    NOTHING_TO_SAY, PAGE_SETTLE_SECONDS, REQUEST_TIMEOUT_SECONDS, STALE_SNAPSHOT, UNCHECKABLE, Agent,
                    BrowserClosedError, BrowserStartError)
 from conftest import scratch_home
-from gate import FILE_REFUSAL, SECRET_REFUSAL, SPOKEN_LABEL_CHARACTERS
+from gate import FILE_REFUSAL, FRAME_REFUSAL, SECRET_REFUSAL, SLOWLY_REFUSAL, SPOKEN_LABEL_CHARACTERS
 
 NEVER_SENT = "never sent: these tests make no API request"
 BLOCKED_HOST = "bank.example"
@@ -45,6 +45,10 @@ ATTACHED_FILES_JS = "() => [...document.querySelector('input[type=file]').files]
 START_AUDIO_JS = ("() => { const audio = new Audio(); document.body.append(audio);"
                   " audio.srcObject = new AudioContext().createMediaStreamDestination().stream; return audio.play(); }")
 NUMBER_LABELS_JS = "() => { String.prototype.trim = () => 7; }"  # a page can redefine what inspect.js runs on
+HIDE_KIND_JS = "() => { const keys = Object.keys; Object.keys = (value) => keys(value).filter((key) => key !== 'kind'); }"
+HIDE_FACTS_JS = "() => { Object.keys = () => []; }"  # the server then prints the facts as undefined
+CONTAINER_REFUSAL = "That is a container: aim at the button, link or field inside it."
+ADDRESS_REFUSAL = "Only plain http and https addresses are allowed"
 BUSY_SECONDS = 3
 BUSY_JS = f"() => {{ const end = Date.now() + {BUSY_SECONDS * 1000}; while (Date.now() < end); }}"
 SHORT_CALL_TIMEOUT_SECONDS = 1
@@ -290,9 +294,11 @@ HARMLESS = [
     Case("Space on the focused Search button", *press("Space"),
          before=(click(Element('textbox "Search jobs"')), press("Tab")),
          returns=PAGE_REPORT, page=Page("/s?q=", None, 0)),  # a key press returns while the search is still loading
-    Case("submit button of a form whose only sign of search is the box's name", *click(Element('button "Look up"')),
+    Case("form submit button labelled Look up", *click(Element('button "Look up"')),
          returns=PAGE_REPORT + "/results?search_query=\n", page=Page("/results?search_query=", None, 0)),
-    Case("slowly typed words in a field", *type_into(COMMENT, "hello there", slowly=True)),
+    Case("form submit button labelled Continue", *click(Element('button "Continue"')), page=Page(FORM, "LOG: CONTINUED", 0)),
+    Case("type into a country picker that switches autofill off with new-password",
+         *type_into(Element('textbox "Country"'), "Canada")),
     Case("dismiss a confirm() dialog", "browser_handle_dialog", {"accept": False}, before=(click(CLOSE_ACCOUNT),),
          returns=PAGE_REPORT + FORM + "\n"),
     Case("accept an alert()", "browser_handle_dialog", {"accept": True}, before=(click(Element('button "Save draft"')),),
@@ -301,7 +307,10 @@ HARMLESS = [
 
 IRREVERSIBLE = [
     Case("Submit application", *click(SUBMIT), question="press Submit application on localhost"),
-    Case("Apply as a form's submit button", *click(Element('button "Apply"')), question="press Apply on localhost"),
+    Case("Apply as the submit button of a form with a search-named field", *click(Element('button "Apply"')),
+         question="press Apply on localhost"),
+    Case("Apply now as a submit button inside a web component", *click(Element('button "Apply now"')),
+         question="press Apply now on localhost"),
     Case("icon named Send only by aria-label", *click(Element('button "Send"')), question="press Send on localhost"),
     Case("icon named Pay now only by title", *click(Element('button "Pay now"')), question="press Pay now on localhost"),
     Case("div with role=button, Place order", *click(Element('button "Place order"')),
@@ -314,8 +323,6 @@ IRREVERSIBLE = [
          question="press Send message on 127.0.0.1"),
     Case("typing with submit in a form field", *type_into(FULL_NAME, "P", submit=True),
          question="press Enter in Full name on localhost"),
-    Case("slowly typed newline in a field without a form", *type_into(COMMENT, "hi\n", slowly=True),
-         question="press Enter in Comment on localhost"),
     Case("Enter in a field without a form", *press("Enter"), before=(click(COMMENT),),
          question="press Enter in Comment on localhost"),
     Case("Control+Enter chord", *press("Control+Enter"), before=(click(COMMENT),),
@@ -332,15 +339,17 @@ IRREVERSIBLE = [
     Case("typing with submit in a field named Research interests",
          *type_into(Element('textbox "Research interests"'), "x", submit=True),
          question="press Enter in Research interests on localhost"),
-    Case("slowly typed space aimed at a button", *type_into(Element('button "Send"'), " ", slowly=True),
-         question="press Send on localhost"),
     Case("submit button with no label of its own", *click(Element('button "Submit"')), question="press this button on localhost"),
-    Case("form submit button whose label is not on the word list", *click(Element('button "Complete order"')),
+    Case("Complete order as a form's submit button", *click(Element('button "Complete order"')),
          question="press Complete order on localhost"),
-    Case("image submit button named by its alt text", *click(Element('button "Continue"')),
-         question="press Continue on localhost"),
-    Case("icon named by aria-labelledby", *click(Element('button "Delete repository"')),
+    Case("button named by aria-labelledby over its own text", *click(Element('button "Delete repository"')),
          question="press Delete repository on localhost"),
+    Case("icon named by the aria-label of the image inside it", *click(Element('img "Delete"')),
+         question="press Delete on localhost"),
+    Case("icon named by the title of the element inside it", *click(Element('button "Send message"', 2)),
+         question="press Send message on localhost"),
+    Case("button named only by CSS-generated text, which the gate cannot read", *click(Element('button "Delete project"')),
+         question="press this button on localhost"),
     Case("icon named by the title inside its svg", *click(Element('button "Remove item"')),
          question="press Remove item on localhost"),
     Case("button whose text is slotted into a web component", *click(Element('button "Delete workspace"')),
@@ -349,6 +358,8 @@ IRREVERSIBLE = [
          question="press Delete page on localhost"),
     Case("button inside the label of a checkbox", *click(Element('button "Delete history"')),
          question="press Delete history on localhost"),
+    Case("button inside the label of a password field", *click(Element('button "Remove PIN"')),
+         question="press Remove PIN on localhost"),
     Case("fill_form ticking a menu item as a checkbox", "browser_fill_form", {"fields": [
         {"name": "Delete account", "type": "checkbox", "target": Element('menuitemcheckbox "Delete account"'), "value": "true"}]},
          question="press Delete account on localhost"),
@@ -366,14 +377,22 @@ REFUSED = [
          {"target": "label:has([name=pw])", "element": "Password", "text": "hunter2"}, returns=SECRET_REFUSAL),
     Case("type into a password field shown as text", *type_into(Element('textbox "Passphrase"'), "hunter2"),
          returns=SECRET_REFUSAL),
+    Case("type at a password field's label inside a menu item", "browser_type",
+         {"target": "#pin", "element": "PIN", "text": "1234"}, returns=SECRET_REFUSAL),
+    Case("slowly typed text aimed at the heading while the password field has focus",
+         *type_into(Element('heading "Welcome [ref=e9] [active]"'), "hunter2", slowly=True),
+         before=(click(Element('textbox "Password"')),), returns=SLOWLY_REFUSAL),
+    Case("a digit typed into a cross-origin iframe", *press("4"), before=(click(Element('textbox "Frame message"', 1)),),
+         returns=FRAME_REFUSAL),
+    Case("click aimed at the wrapper around the Send button", "browser_click", {"target": "#wrap", "element": "Send"},
+         returns=CONTAINER_REFUSAL),
     Case("stale ref", "browser_click", {"target": "e999", "element": "gone"},
          returns=f"{SERVER_ERROR}\nError: Ref e999 not found"),
-    Case("navigate to a file", "browser_navigate", {"url": "file:///etc/hosts"},
-         returns="Only http and https addresses are allowed."),
+    Case("navigate to a file", "browser_navigate", {"url": "file:///etc/hosts"}, returns=ADDRESS_REFUSAL),
     Case("navigate to loopback", "browser_navigate", {"url": "http://127.0.0.1/form.html"},
          returns="Private and loopback addresses are blocked."),
     Case("navigate to script shaped like host:port", "browser_navigate", {"url": "javascript:1/log('SCRIPT')"},
-         returns="Only http and https addresses are allowed."),
+         returns=ADDRESS_REFUSAL),
     Case("open a blocked host's subdomain in a new tab", "browser_tabs",
          {"action": "new", "url": f"https://www.{BLOCKED_HOST}/"}, returns=f"www.{BLOCKED_HOST} is blocked."),
     Case("a tool the model is never given", EVALUATE_TOOL, {"function": "() => 1"},
@@ -387,6 +406,11 @@ REFUSED = [
     Case("click on a page that turns every label into a number", *click(Element('button "Send"')),
          before=((EVALUATE_TOOL, {"function": NUMBER_LABELS_JS}),),
          returns=UNCHECKABLE.format(error="expected string or bytes-like object, got 'int'")),
+    Case("click on a page that hides what kind of element it is", *click(Element('button "Send"')),
+         before=((EVALUATE_TOOL, {"function": HIDE_KIND_JS}),), returns=UNCHECKABLE.format(error="'kind'")),
+    Case("click on a page that hides every fact", *click(Element('button "Send"')),
+         before=((EVALUATE_TOOL, {"function": HIDE_FACTS_JS}),),
+         returns=UNCHECKABLE.format(error="Expecting value: line 1 column 1 (char 0)")),
 ]
 
 case_name = operator.attrgetter("name")
@@ -450,10 +474,10 @@ def test_find_may_not_save_its_results_over_a_file_in_the_upload_folder(browser:
 
 def test_upload_from_the_upload_folder_needs_no_question(browser: Browser) -> None:
     browser.open_form()
-    browser.call(*click(RESUME))
+    asked_to_choose, _ = browser.use(*click(RESUME))  # a file input has no label of its own
     outcome = browser.attempt("browser_file_upload", {"paths": [str(browser.home / "uploads" / "resume.pdf")]})
     attached = browser.attached_files()
-    assert outcome.asked == [], f"attaching the resume made the user answer a question: {outcome}"
+    assert asked_to_choose + outcome.asked == [], f"attaching the resume asked {asked_to_choose} to choose it, then: {outcome}"
     assert outcome.returned.startswith(PAGE_REPORT.format(site=browser.site) + FORM), f"the upload failed: {outcome}"
     assert outcome.page == UNTOUCHED and attached == ["resume.pdf"], f"attached {attached}, {outcome}"
 
@@ -517,10 +541,11 @@ def test_closing_the_window_right_after_the_first_navigation_of_a_session_raises
 
 def test_what_the_user_typed_into_secret_fields_is_hidden_from_the_page_the_model_reads(browser: Browser) -> None:
     browser.open_form()
-    for field, typed in {**SECRETS, "Full name": "Pierce Luu"}.items():
+    typed_openly = {"Full name": "Pierce Luu", "Country": "Canada"}  # new-password on a picker only switches autofill off
+    for field, typed in {**SECRETS, **typed_openly}.items():
         browser.call(*type_into(Element(f'textbox "{field}"'), typed))
     shown = dict(SHOWN_FIELD.findall(browser.run(browser.agent._page())))
-    assert shown == {"Full name": "Pierce Luu"} | dict.fromkeys(SECRETS, HIDDEN), f"the model would read {shown}"
+    assert shown == typed_openly | dict.fromkeys(SECRETS, HIDDEN), f"the model would read {shown}"
 
 
 def test_a_browser_call_on_a_page_whose_script_does_not_yield_times_out(

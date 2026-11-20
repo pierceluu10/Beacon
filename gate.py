@@ -8,6 +8,8 @@ IRREVERSIBLE = re.compile(
     r"\b(submit|send|pay|buy|purchase|place (your |my |the )?order|order now|check[ -]?out|delete|remove|confirm|post|publish"
     r"|book|reserve|subscribe|unsubscribe|donate|transfer|withdraw|sign[ -]?up|register|accept|agree"
     r"|cancel (my|your|subscription|order|booking|reservation))\b", re.IGNORECASE)
+# On a form's own button these words send it; anywhere else they only open one.
+FORM_SUBMIT_ONLY = re.compile(r"\b(apply|complete|order|payment|booking)\b", re.IGNORECASE)
 # The server prints the message raw, so it may span lines; the first line that opens a dialog is the server's own.
 DIALOG = re.compile(r'^- \["(?P<kind>\w+)" dialog with message "(?P<message>.*)"\]: can be handled by browser_handle_dialog',
                     re.MULTILINE | re.DOTALL)
@@ -22,6 +24,8 @@ UNREADABLE = "unreadable"  # the fact kind the agent reports when inspect.js cou
 SECRET_REFUSAL = ("That is a password, card or verification-code field. Never fill those in: call ask_user and ask the user "
                   "to do it in the window.")
 FILE_REFUSAL = "Saving results to a file is not allowed. Call the tool again without filename."
+SLOWLY_REFUSAL = "Typing slowly is not allowed. Call the tool again without slowly."
+FRAME_REFUSAL = "The focused field is inside an embedded frame that cannot be checked. Use browser_type on the field itself."
 
 
 class Verdict(NamedTuple):
@@ -36,7 +40,8 @@ def url_refusal(url: str, blocked_hosts: frozenset[str]) -> str | None:
     """Why the agent may not open url, or None when it may."""
     plain = PLAIN_ADDRESS.fullmatch(url)
     if not plain:
-        return "Only http and https addresses are allowed."
+        return ("Only plain http and https addresses are allowed: lower-case scheme, a site name of ASCII letters, digits, "
+                "dots and hyphens, no user name, no trailing dot.")
     host = plain["host"].lower()
     if any(host == blocked or host.endswith(f".{blocked}") for blocked in (*map(str.lower, blocked_hosts), "localhost")):
         return f"{host} is blocked."
@@ -73,7 +78,8 @@ def _ask(action: str, fact: dict) -> Verdict:
 def _click(fact: dict) -> Verdict:
     kind, label = fact["kind"], fact["label"]
     is_title = kind in ("link", "other") and len(label.split()) > SHORT_LABEL_WORDS
-    if kind in ("button", "link", "other") and not is_title and (IRREVERSIBLE.search(label) or fact["submits"]):
+    asks = IRREVERSIBLE.search(label) or fact["submits"] and FORM_SUBMIT_ONLY.search(label) or kind == "button" and not label
+    if kind in ("button", "link", "other") and not is_title and asks:
         return _ask(f"press {_spoken(label) or 'this button'}", fact)
     return ALLOW
 
@@ -90,6 +96,8 @@ def judge(tool: str, arguments: dict, facts: list[dict]) -> Verdict:
     """Classify one browser call from the facts inspect.js returned for to_inspect(tool, arguments)."""
     if "filename" in arguments:  # the server would write it into the upload folder, over the resume if so named
         return Verdict("deny", FILE_REFUSAL)
+    if arguments.get("slowly"):  # its keys go to whatever has focus, which need not be the target
+        return Verdict("deny", SLOWLY_REFUSAL)
     for fact in facts:
         if fact["kind"] == UNREADABLE:  # fail closed, and the model reads the server's reason
             return Verdict("deny", fact["label"])
@@ -100,12 +108,12 @@ def judge(tool: str, arguments: dict, facts: list[dict]) -> Verdict:
     if tool == "browser_fill_form":  # a field filled as a checkbox is clicked
         return next((verdict for verdict in map(_click, facts) if verdict != ALLOW), ALLOW)
     pressed = set(arguments.get("key", "").split("+")) if tool == "browser_press_key" else set()  # a chord presses every part
-    if tool == "browser_type":
-        pressed = set(arguments.get("text", "")) if arguments.get("slowly") else set()  # typed slowly, each character is a key
-        pressed |= {"Enter"} if arguments.get("submit") else set()
-    if pressed & ENTER_KEYS:
+    if pressed & ENTER_KEYS or tool == "browser_type" and arguments.get("submit"):
         return _press("Enter", facts[0])
-    return _press("Space", facts[0]) if pressed & SPACE_KEYS else ALLOW
+    if pressed & SPACE_KEYS:
+        return _press("Space", facts[0])
+    types = any(len(part) == 1 for part in pressed)  # a one-character key types that character
+    return Verdict("deny", FRAME_REFUSAL) if types and facts[0]["kind"] == "frame" else ALLOW
 
 
 def judge_dialog(modal_state: str) -> Verdict:

@@ -52,12 +52,12 @@ def snapshot_with_dialog(kind: str, message: str, title: str = "Form") -> str:
 # url_refusal
 
 @pytest.mark.parametrize(("url", "reason"), [
-    case("file scheme", "file:///etc/hosts", "Only http"),
-    case("javascript scheme", "javascript:alert(1)", "Only http"),
-    case("about:blank", "about:blank", "Only http"),
-    case("data scheme", "data:text/html,<h1>hi</h1>", "Only http"),
-    case("chrome settings", "chrome://settings", "Only http"),
-    case("ftp scheme", "ftp://example.com/resume.pdf", "Only http"),
+    case("file scheme", "file:///etc/hosts", "Only plain http"),
+    case("javascript scheme", "javascript:alert(1)", "Only plain http"),
+    case("about:blank", "about:blank", "Only plain http"),
+    case("data scheme", "data:text/html,<h1>hi</h1>", "Only plain http"),
+    case("chrome settings", "chrome://settings", "Only plain http"),
+    case("ftp scheme", "ftp://example.com/resume.pdf", "Only plain http"),
     case("loopback with port and path", "http://127.0.0.1:8771/form.html", "loopback"),
     case("loopback with no scheme", "127.0.0.1", "loopback"),
     case("short loopback 127.1", "http://127.1", "loopback"),
@@ -65,13 +65,13 @@ def snapshot_with_dialog(kind: str, message: str, title: str = "Form") -> str:
     case("loopback in hexadecimal", "http://0x7f.1/", "loopback"),
     case("this machine as an empty hexadecimal number, which Chrome reads as 0", "http://0x/", "not a valid web address"),
     case("loopback ending in an empty hexadecimal number", "http://127.0.0.0x/", "not a valid web address"),
-    case("IPv6 loopback", "http://[::1]", "Only http"),
-    case("IPv6 loopback with a port", "http://[::1]:8080/", "Only http"),
-    case("IPv4-mapped IPv6 loopback", "http://[::ffff:127.0.0.1]", "Only http"),
+    case("IPv6 loopback", "http://[::1]", "Only plain http"),
+    case("IPv6 loopback with a port", "http://[::1]:8080/", "Only plain http"),
+    case("IPv4-mapped IPv6 loopback", "http://[::ffff:127.0.0.1]", "Only plain http"),
     case("home router", "http://192.168.1.1", "Private"),
     case("private 10 network", "http://10.0.0.1", "Private"),
     case("link-local metadata address", "http://169.254.169.254/latest/meta-data", "Private"),
-    case("loopback behind a decoy user name", "http://youtube.com@127.0.0.1/", "Only http"),
+    case("loopback behind a decoy user name", "http://youtube.com@127.0.0.1/", "Only plain http"),
     case("localhost", "http://localhost", "localhost is blocked"),
     case("localhost in capitals with a port", "http://LOCALHOST:8000/", "localhost is blocked"),
     case("subdomain of localhost", "http://foo.localhost", "foo.localhost is blocked"),
@@ -79,7 +79,9 @@ def snapshot_with_dialog(kind: str, message: str, title: str = "Form") -> str:
     case("subdomain of a blocked host", "https://www.bank.example/", "www.bank.example is blocked"),
     case("blocked host in capitals", "https://BANK.EXAMPLE/login", "bank.example is blocked"),
     case("blocked host with no scheme", "bank.example/login", "bank.example is blocked"),
-    case("blocked host behind a decoy user name", "https://youtube.com@bank.example/", "Only http"),
+    case("blocked host behind a decoy user name", "https://youtube.com@bank.example/", "Only plain http"),
+    case("user name on a public https address", "https://pierce@example.com/", "no user name"),
+    case("public https address with a non-English site name", "https://münchen.de/", "ASCII letters"),
 ])
 def test_url_refusal_refuses(url: str, reason: str) -> None:
     refusal = gate.url_refusal(url, BLOCKED_HOSTS)
@@ -155,10 +157,8 @@ def test_to_inspect(tool: str, arguments: dict, targets: list) -> None:
 
 @pytest.mark.parametrize(("tool", "arguments", "seen", "action"), [
     case("form submit button", *CLICK, fact("button", "Submit application", submits=True), "press Submit application"),
-    case("Apply as a form's own submit button", *CLICK, fact("button", "Apply", submits=True), "press Apply"),
-    case("form submit whose label is not on the word list", *CLICK, fact("button", "Complete order", submits=True),
-         "press Complete order"),
     case("form submit with no readable label", *CLICK, fact("button", submits=True), "press this button"),
+    case("button with no readable label outside a form", *CLICK, fact("button"), "press this button"),
     case("icon button named by aria-label", *CLICK, fact("button", "Send"), "press Send"),
     case("div with role=button", *CLICK, fact("button", "Place order"), "press Place order"),
     case("label in capitals", *CLICK, fact("button", "PAY NOW"), "press PAY NOW"),
@@ -168,14 +168,11 @@ def test_to_inspect(tool: str, arguments: dict, targets: list) -> None:
     case("link of exactly four words", *CLICK, fact("link", "Delete my account now"), "press Delete my account now"),
     case("bare clickable with a short label", *CLICK, fact("other", "Remove"), "press Remove"),
     case("typed submit in a form field", *type_text("Pierce", submit=True), fact("field", "Full name"), "press Enter in Full name"),
-    case("slow-typed newline", *type_text("hi\n", slowly=True), fact("field", "Comment"), "press Enter in Comment"),
     case("Enter in a field", *press("Enter"), fact("field", "Comment"), "press Enter in Comment"),
     case("keypad Enter in a field", *press("NumpadEnter"), fact("field", "Comment"), "press Enter in Comment"),
     case("Control+Enter in a field", *press("Control+Enter"), fact("field", "Comment"), "press Enter in Comment"),
     case("Enter in the middle of a chord", *press("Shift+Enter+a"), fact("field", "Comment"), "press Enter in Comment"),
     case("Enter on a checkbox or radio", *press("Enter"), fact("toggle"), "press Enter in this form"),
-    case("slow-typed newline at a checkbox", *type_text("\n", slowly=True), fact("toggle"), "press Enter in this form"),
-    case("slow-typed space at a button", *type_text(" ", slowly=True), fact("button", "Delete account"), "press Delete account"),
     case("fill_form aimed at a clickable", *fill_form("e1"), fact("other", "Delete account"), "press Delete account"),
     case("Enter inside an unreadable frame", *press("Enter"), fact("frame"), "press Enter in an embedded form"),
     case("Space inside an unreadable frame", *press("Space"), fact("frame"), "press Space in an embedded form"),
@@ -203,6 +200,13 @@ def test_judge_asks(tool: str, arguments: dict, seen: dict, action: str) -> None
 def test_judge_asks_for_every_irreversible_word(label: str) -> None:
     verdict = gate.judge(*CLICK, [fact("button", label)])
     assert verdict == question(f"press {label}"), f"a button labelled {label!r} got {verdict!r}"
+
+
+@pytest.mark.parametrize("label", ["Apply", "Complete", "Review order", "Continue to payment", "Finish booking"])
+def test_judge_asks_for_every_form_only_word_on_a_form_s_own_button_and_nowhere_else(label: str) -> None:
+    on_form, elsewhere = (gate.judge(*CLICK, [fact("button", label, submits=submits)]) for submits in (True, False))
+    assert on_form == question(f"press {label}"), f"a form's own button labelled {label!r} got {on_form!r}"
+    assert elsewhere == gate.ALLOW, f"a button labelled {label!r} that submits no form got {elsewhere!r}"
 
 
 @pytest.mark.parametrize(("files", "answers", "carried"), [
@@ -241,7 +245,7 @@ def test_question_names_this_page_when_a_frame_has_no_host() -> None:
     case("click into a password field", *CLICK, [fact("secret", "Password")]),
     case("tick the I agree checkbox", *CLICK, [fact("toggle")]),
     case("harmless button", *CLICK, [fact("button", "Next page")]),
-    case("submit button of a search form, which does not report submits", *CLICK, [fact("button", "Search")]),
+    case("bare clickable with no text", *CLICK, [fact("other")]),
     case("plain Cancel dismisses", *CLICK, [fact("button", "Cancel")]),
     case("Apply now that opens a form", *CLICK, [fact("button", "Apply now")]),
     case("Apply link", *CLICK, [fact("link", "Apply")]),
@@ -253,15 +257,13 @@ def test_question_names_this_page_when_a_frame_has_no_host() -> None:
     case("post inside Postpone", *CLICK, [fact("button", "Postpone")]),
     case("pay inside Payment", *CLICK, [fact("button", "Payment methods")]),
     case("multi-paragraph fill is not Enter", *type_text("Dear team,\nhello"), [fact("field", "Cover letter")]),
-    case("slow typing with spaces and no newline", *type_text("hello there", slowly=True), [fact("field", "Comment")]),
-    case("slow-typed space at a checkbox", *type_text(" ", slowly=True), [fact("toggle")]),
     case("typed submit in a search box", *type_text("python", submit=True), [fact("search", "Search jobs")]),
     case("fill a field and a checkbox", *fill_form("e1", "e2"), [fact("field", "Full name"), fact("toggle")]),
     case("Enter in a search box", *press("Enter"), [fact("search", "Search jobs")]),
     case("Enter with nothing focused", *press("Enter"), [fact("none")]),
     case("Space in a field", *press("Space"), [fact("field", "Comment")]),
     case("Space on a checkbox", *press("Space"), [fact("toggle")]),
-    case("Space on the focused Search button", *press("Space"), [fact("button", "Search")]),
+    case("Space on the focused Search button", *press("Space"), [fact("button", "Search", submits=True)]),
     case("Space with nothing focused", *press("Space"), [fact("none")]),
     case("Enter on a focused long link title", *press("Enter"),
          [fact("link", "How to delete your account and remove all posts forever")]),
@@ -276,6 +278,12 @@ def test_question_names_this_page_when_a_frame_has_no_host() -> None:
 def test_judge_allows(tool: str, arguments: dict, seen: list[dict]) -> None:
     verdict = gate.judge(tool, arguments, seen)
     assert verdict == gate.ALLOW, f"judge({tool!r}, {arguments!r}, {seen!r}) returned {verdict!r}; wanted no question"
+
+
+@pytest.mark.parametrize("label", ["Next", "Continue", "Save", "Sign in", "Search", "Go", "Close", "Reject all"])
+def test_judge_allows_a_form_s_own_button_with_an_ordinary_label(label: str) -> None:
+    verdict = gate.judge(*CLICK, [fact("button", label, submits=True)])
+    assert verdict == gate.ALLOW, f"a form's own button labelled {label!r} got {verdict!r}; wanted no question"
 
 
 # judge: denies
@@ -294,6 +302,11 @@ def test_judge_allows(tool: str, arguments: dict, seen: list[dict]) -> None:
     case("Enter in a password field", *press("Enter"), [fact("secret", "Password")], gate.SECRET_REFUSAL),
     case("find saving its results to a file", "browser_find", {"text": "Submit", "filename": "resume.pdf"}, [],
          gate.FILE_REFUSAL),
+    case("slow typing", *type_text("hello there", slowly=True), [fact("field", "Comment")], gate.SLOWLY_REFUSAL),
+    case("slow typing with submit", *type_text("x", slowly=True, submit=True), [fact("search", "Search jobs")],
+         gate.SLOWLY_REFUSAL),
+    case("a digit typed into an unreadable frame", *press("4"), [fact("frame")], gate.FRAME_REFUSAL),
+    case("a capital letter typed into an unreadable frame", *press("Shift+a"), [fact("frame")], gate.FRAME_REFUSAL),
 ])
 def test_judge_denies_without_a_question(tool: str, arguments: dict, seen: list[dict], refusal: str) -> None:
     verdict = gate.judge(tool, arguments, seen)
@@ -305,7 +318,6 @@ def test_judge_denies_without_a_question(tool: str, arguments: dict, seen: list[
 @pytest.mark.parametrize(("tool", "arguments", "seen"), [
     case("newline as the key name", *press("\n"), fact("field", "Comment")),
     case("carriage return as the key name", *press("\r"), fact("field", "Comment")),
-    case("slow-typed carriage return", *type_text("hi\r", slowly=True), fact("field", "Comment")),
     case("Enter written first in a chord", *press("Enter+Shift"), fact("field", "Comment")),
     case("Space written first in a chord", *press("Space+Shift"), fact("button", "Submit application", submits=True)),
     case("click an unlabelled form submit", *CLICK, fact("button", "", submits=True, files=["resume.pdf"], answers=2)),
