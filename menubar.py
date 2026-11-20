@@ -4,6 +4,7 @@ import signal
 import sys
 import threading
 
+import AppKit
 import rumps
 
 import main
@@ -61,4 +62,6 @@ class MenuBar(rumps.App):
 
 
 def run() -> None:
+    # macOS places a menu bar item only for a process that is an accessory app before the item is created.
+    AppKit.NSApplication.sharedApplication().setActivationPolicy_(AppKit.NSApplicationActivationPolicyAccessory)
     MenuBar().run()
