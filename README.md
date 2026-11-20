@@ -50,7 +50,27 @@ When you hear "Ready", say "Hey Jarvis".
 2. Write `~/.hey/facts.md` in plain text: name, email, phone, links, location, work authorization, notice
    period, salary expectations. It answers form questions only from this file and what you say; anything
    missing, it asks you. No passwords.
-3. Open the job posting (or tell it the address) and say "Hey Jarvis, apply to this job with my resume".
+3. Open the job posting in your own Chrome or in its window (or tell it the address) and say "Hey Jarvis, apply to
+   this job with my resume".
+
+## Summon it to the page you're on
+
+With a page open in your everyday Chrome and that Chrome in front, say "Hey Jarvis, apply to this job" or "Hey
+Jarvis, what is this page about?". It opens the same address in its own window and works there. Your everyday
+Chrome is only read, never controlled.
+
+- The first time, macOS asks whether your terminal may control Google Chrome. Click Allow and say the command
+  again. If you chose Don't Allow, switch Google Chrome on for your terminal in System Settings, Privacy &
+  Security, Automation.
+- Logins do not carry over. Its window has its own profile, so a page behind a login shows the login page until
+  you have signed in there once.
+- Google Chrome only, and only while it is the app in front. Other browsers, Chrome Beta and Canary, and
+  incognito windows are not read.
+- A PDF opens in its window, but it cannot read one.
+- While your everyday Chrome is in front, every command sends the front tab's address and the first 200
+  characters of its title to the Anthropic API, also when the command is about something else. For a site in
+  `blocked_hosts` only the site's name is sent; for a local file, a `chrome://` page or another address it may
+  not open, only the reason.
 
 ## Configuration
 
@@ -78,6 +98,8 @@ Optional, in `~/.hey/config.toml`. Unknown keys are an error.
 | `agent.py` | Claude driving Chrome through the Playwright MCP server. |
 | `gate.py` | The rules for what needs a spoken yes and what is refused. |
 | `inspect.js` | Runs in the page to describe the element a click or key press would hit, so the gate judges the real DOM, not the model's description. |
+| `everyday.py` | Reads the address and title of the front tab of your everyday Chrome when that Chrome is the app in front. |
+| `front_tab.js` | The macOS script `everyday.py` runs. It addresses the Chrome in front by process id, because every Chrome answers to the same name. |
 | `prompt.txt` | The system prompt. |
 
 ## Tests
