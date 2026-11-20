@@ -76,6 +76,8 @@ def spoken_error(error: Exception) -> str:
 async def hear_whole(ears: Ears, first: str | None) -> str | None:
     """first plus whatever follows right away, so a pause in the middle of a sentence does not cut it in two."""
     while first is not None and (more := await ears.hear(CONTINUATION_SECONDS)):
+        if is_stop(more):
+            return more  # a change of mind, not the rest of the sentence
         first = f"{first} {more}".strip()
     return first
 
@@ -105,7 +107,7 @@ async def ask(ears: Ears, question: str) -> str | None:
 async def stop_when_told(ears: Ears, work: asyncio.Task, names: tuple[str, ...]) -> None:
     while True:
         heard = await ears.hear()
-        if is_stop(wake_command(heard, names) or heard):
+        if is_stop(wake_command(heard, names) or heard, names):
             work.cancel()
 
 
@@ -136,17 +138,19 @@ async def converse(ears: Ears, agent: Agent, config: Config) -> None:
         if command is None:
             continue
         command = await hear_whole(ears, command)
-        if not command:
-            await ears.say(GREETING.format(user_name=config.user_name))
+        while command is not None and not is_dismissal(command, names):
+            if command:
+                if clock() - last_command > FORGET_AFTER_SECONDS:
+                    agent.forget()
+                await ears.say(await carry_out(agent, ears, command, names))
+                last_command = clock()
+                if await agent.media_playing():  # a playing video would be heard as follow-up commands
+                    break
+            else:
+                await ears.say(GREETING.format(user_name=config.user_name))
             command = await hear_whole(ears, await ears.hear(FOLLOW_UP_SECONDS))
-        while command and not is_dismissal(command):
-            if clock() - last_command > FORGET_AFTER_SECONDS:
-                agent.forget()
-            await ears.say(await carry_out(agent, ears, command, names))
-            last_command = clock()
-            if await agent.media_playing():  # a playing video would be heard as follow-up commands
-                break
-            command = await hear_whole(ears, await ears.hear(FOLLOW_UP_SECONDS))
+            if command and wake_command(command, names) == "":
+                command = ""  # the name alone in the follow-up window is a wake, not a command
 
 
 def build_agent(config: Config, ears: Ears, headless: bool = False) -> Agent:

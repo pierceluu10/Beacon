@@ -19,11 +19,15 @@ MICROPHONE_CHECK_FRAMES = SAMPLE_RATE // 2
 MICROPHONE_CHECK_ATTEMPTS = 30  # 15 s: time to answer the macOS permission prompt on the first run
 WAKE_WINDOW_WORDS = 3
 WAKE_SIMILARITY = 0.75
-YES_MAX_WORDS = 5  # a longer sentence that happens to contain "yes" is not an approval
+YES_MAX_WORDS = 5  # an approval is a few words, not a sentence
 YES = ("yes", "yeah", "yep", "yup", "sure", "confirm", "correct", "go ahead", "do it", "submit")
+YES_FILLERS = ("uh", "um", "okay", "ok", "please", "and")
+YES_ONLY = rf"(({'|'.join(YES_FILLERS)}) )*({'|'.join(YES)})( ({'|'.join(YES + YES_FILLERS)}))*"
 NO = ("no", "nope", "nah", "cancel", "stop", "don't", "do not", "wait", "hold on", "never mind")
-STOP = r"(no |please |okay )*(stop|cancel|abort|never ?mind)( it| that| this| please| now| everything)*"
-DISMISS = rf"{STOP}|no|nope|(no )?thanks?( you)?|that('s| is) all|nothing|good ?bye"
+STOP_WORD = "(stop|cancel|abort|never ?mind)"
+STOP = rf"((no|please|okay|hey|wait) )*{STOP_WORD}( (it|that|this|please|right|now|everything|{STOP_WORD}))*"
+DISMISS = (rf"{STOP}|(okay |great |no )*(no|nope|thanks?( you)?( a lot| so much| very much)?"
+           rf"|that('s| is) (all|it)|nothing( else)?|(good ?)?bye)")
 
 
 class MicrophoneSilentError(Exception):
@@ -39,8 +43,13 @@ def check_microphone() -> None:
     raise MicrophoneSilentError
 
 
-def _plain(transcript: str) -> str:
-    return " ".join(re.findall(r"[a-z']+", transcript.lower()))
+def _is_name(word: str, names: tuple[str, ...]) -> bool:
+    return any(SequenceMatcher(None, word.lower(), name.lower()).ratio() >= WAKE_SIMILARITY for name in names)
+
+
+def _plain(transcript: str, names: tuple[str, ...] = ()) -> str:
+    """The words in lower case, minus the agent's name: it may be said anywhere in a stop or a closing remark."""
+    return " ".join(word for word in re.findall(r"[a-z']+", transcript.lower()) if not _is_name(word, names))
 
 
 def _mentions(transcript: str, phrases: tuple[str, ...]) -> bool:
@@ -52,24 +61,25 @@ def wake_command(transcript: str, names: tuple[str, ...]) -> str | None:
     for index, word in enumerate(re.finditer(r"[\w']+", transcript)):
         if index == WAKE_WINDOW_WORDS:
             break
-        if any(SequenceMatcher(None, word[0].lower(), name.lower()).ratio() >= WAKE_SIMILARITY for name in names):
+        if _is_name(word[0], names):
             return transcript[word.end():].strip(" ,.!?")
     return None
 
 
 def parse_yes_no(transcript: str) -> bool | None:
-    """True for a short yes, False for no (no wins when both are heard), None when unclear."""
+    """True for a short answer of yes words only, False for no (no wins when both are heard), None when unclear."""
     if _mentions(transcript, NO):
         return False
-    return True if _mentions(transcript, YES) and len(_plain(transcript).split()) <= YES_MAX_WORDS else None
+    plain = _plain(transcript)
+    return True if re.fullmatch(YES_ONLY, plain) and len(plain.split()) <= YES_MAX_WORDS else None
 
 
-def is_stop(transcript: str) -> bool:
-    return re.fullmatch(STOP, _plain(transcript)) is not None
+def is_stop(transcript: str, names: tuple[str, ...] = ()) -> bool:
+    return re.fullmatch(STOP, _plain(transcript, names)) is not None
 
 
-def is_dismissal(transcript: str) -> bool:
-    return re.fullmatch(DISMISS, _plain(transcript)) is not None
+def is_dismissal(transcript: str, names: tuple[str, ...] = ()) -> bool:
+    return re.fullmatch(DISMISS, _plain(transcript, names)) is not None
 
 
 async def speak(text: str, voice: str) -> None:

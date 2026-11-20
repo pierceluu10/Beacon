@@ -26,10 +26,11 @@ When you hear "Ready", say "Hey Jarvis".
 
 - Say the name and the command in one breath, or say the name, wait for "Hi Pierce", then speak.
 - After it answers you have 8 seconds to give a follow-up without the name.
-- Say "stop" while it is working to cancel. "Thanks" or silence ends the exchange.
+- Say "stop" while it is working to cancel; "Stop, Jarvis" and "Stop! Stop!" work too. "Thanks" or silence ends
+  the exchange, and so does "stop" when nothing is running: to stop a video, say "Hey Jarvis, pause the video".
 - It asks out loud before anything that submits, sends, pays, books, posts or deletes: any control whose label
-  says so, the button of every form except a search form whatever its label, and Enter in a form. Only a short
-  spoken "yes" goes ahead; silence means no.
+  says so, the button of every form except a search form whatever its label, and Enter in a form. Only a plain
+  "yes", "go ahead" or "do it" goes ahead; an unclear answer is asked once more, and silence means no.
 - It never types passwords, card numbers or verification codes, and never solves CAPTCHAs. It asks you to do
   those in the window and say "continue".
 
@@ -85,6 +86,7 @@ No test needs a microphone or a person: clips are made with `say` and fed throug
   "Next"; you watching the window is the last defence. Keep banking and your main email out of this profile.
 - It opens only plain `http://` and `https://` addresses of public sites: no user names, escapes or non-English
   letters in the site name, and nothing on this machine or your home network.
-- It cannot hear you while it is speaking.
+- It cannot hear you while it is speaking. After a bare "Hey Jarvis", say the command in the same breath or wait
+  for "Hi Pierce": a command begun a second or two after the name is talked over, and only its end is acted on.
 - A pause longer than about a second in the middle of a command cuts the command off.
 - LinkedIn is off limits by design (its terms forbid automation).

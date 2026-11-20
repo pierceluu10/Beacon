@@ -18,6 +18,7 @@ PORT_WAIT_ATTEMPTS = 100
 PORT_WAIT_SECONDS = 0.1
 CLIPS = {
     "wake": "Hey Jarvis.",
+    "wakestop": "Hey Jarvis, stop.",
     "wakecmd": "Hey Jarvis, go to YouTube and search for lo-fi beats.",
     "travis": "Hey Travis, how was your weekend?",
     "yes": "Yes.",

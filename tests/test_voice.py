@@ -29,10 +29,11 @@ SHORT_MICROPHONE_CHECK_ATTEMPTS = 2
 QUESTION = "Ready to press Submit?"
 RETRY = main.CONFIRM_RETRY
 UNCLEAR = "thanks"  # the clip of an answer that is neither yes nor no
+RESULT = "Done."
+ACKNOWLEDGED_AND_DONE = [main.ACKNOWLEDGEMENT, RESULT]
+GREETING = main.GREETING.format(user_name=CONFIG.user_name)
+REPLY_HANDLED_SECONDS = 5  # a short reply is spoken, transcribed, joined and acted on well within this
 SPEECH_SLOWER_THAN_NOMINAL = 1.2  # measured: 71 words took 24.9 s at 190 words a minute, 1.11 times the nominal 22.4 s
-NEGATED_YES = pytest.mark.xfail(strict=True, reason='voice.NO has no "not", so "not sure" and "not correct" approve')
-REPEATED_STOP = pytest.mark.xfail(strict=True, reason="voice.STOP allows one stop word, so a repeated one is no stop")
-NAME_AFTER_STOP = pytest.mark.xfail(strict=True, reason="main.stop_when_told only strips the name when it comes first")
 
 
 @pytest.mark.parametrize("transcript, command", [
@@ -70,7 +71,19 @@ def test_an_alias_wakes_like_the_name():
     ("Do it.", True),
     ("Yes. 2", True),
     ("Yes, go ahead and submit", True),
+    ("Okay, go ahead.", True),
+    ("Sure, do it please", True),
     ("Yes, go ahead and submit it", None),
+    ("Yes yes yes yes yes yes", None),
+    ("I'm not sure", None),
+    ("Not sure.", None),
+    ("That's not correct", None),
+    ("It isn't correct", None),
+    ("Are you sure?", None),
+    ("Never submit that.", None),
+    ("Not yet, do it later.", None),
+    ("Correct it", None),
+    ("Yes, but change the email first", None),
     ("yeah that's what she said about it yesterday", None),
     ("It was due yesterday", None),
     ("Okay.", None),
@@ -93,14 +106,8 @@ def test_an_alias_wakes_like_the_name():
     ("Never mind.", False),
     ("No. 5", False),
 ])
-def test_parse_yes_no_needs_a_short_yes_and_lets_no_win(transcript, verdict):
+def test_parse_yes_no_needs_a_short_answer_of_yes_words_only_and_lets_no_win(transcript, verdict):
     assert parse_yes_no(transcript) is verdict, f"{transcript!r} gave {parse_yes_no(transcript)!r}"
-
-
-@NEGATED_YES
-@pytest.mark.parametrize("transcript", ["I'm not sure", "Not sure.", "That's not correct"])
-def test_a_negated_yes_is_not_an_approval(transcript):
-    assert parse_yes_no(transcript) is not True, f"{transcript!r} approved"
 
 
 @pytest.mark.parametrize("transcript, stops", [
@@ -116,8 +123,15 @@ def test_a_negated_yes_is_not_an_approval(transcript):
     ("Abort!", True),
     ("Never mind.", True),
     ("Nevermind", True),
-    pytest.param("Stop, stop!", True, marks=REPEATED_STOP),
-    pytest.param("Stop stop stop", True, marks=REPEATED_STOP),
+    ("Stop, stop!", True),
+    ("Stop stop stop", True),
+    ("Wait, stop!", True),
+    ("Hey, stop!", True),
+    ("Stop it, stop it now", True),
+    ("Stop right now", True),
+    ("Stop, Jarvis.", False),
+    ("Wait.", False),
+    ("Hey, stop the video", False),
     ("Cancel my order on Amazon", False),
     ("Stop the video", False),
     ("Don't stop", False),
@@ -148,6 +162,23 @@ def test_is_stop_only_when_the_whole_utterance_says_stop(transcript, stops):
     ("Stop.", True),
     ("Never mind", True),
     ("Cancel that", True),
+    ("Thanks a lot!", True),
+    ("Thank you so much.", True),
+    ("Okay, thanks.", True),
+    ("Great, thank you very much", True),
+    ("No, that's all", True),
+    ("That's it.", True),
+    ("Nothing else.", True),
+    ("Bye.", True),
+    ("Thank you Jarvis", True),
+    ("Never mind, Jervis.", True),
+    ("Hey Jarvis, stop!", True),
+    ("Jarvis", False),
+    ("Hey Jarvis.", False),
+    ("Hey Jarvis, stop the video", False),
+    ("Thanks, next", False),
+    ("That's it, open that one", False),
+    ("Okay, stop the video", False),
     ("No, open the second one", False),
     ("Thanks, now open my email", False),
     ("Nothing Else Matters by Metallica", False),
@@ -158,15 +189,19 @@ def test_is_stop_only_when_the_whole_utterance_says_stop(transcript, stops):
     ("", False),
 ])
 def test_is_dismissal_only_when_the_whole_utterance_declines(transcript, dismisses):
-    assert is_dismissal(transcript) is dismisses, f"{transcript!r} gave {is_dismissal(transcript)!r}"
+    assert is_dismissal(transcript, NAMES) is dismisses, f"{transcript!r} gave {is_dismissal(transcript, NAMES)!r}"
 
 
 @pytest.mark.parametrize("heard, stops", [
     ("Stop.", True),
     ("Hey Jarvis, stop!", True),
     ("Jarvis, cancel that.", True),
-    pytest.param("Stop: Jarvis", True, marks=NAME_AFTER_STOP),  # how Moonshine wrote the spoken "Stop, Jarvis."
+    ("Stop: Jarvis", True),  # how Moonshine wrote the spoken "Stop, Jarvis."
+    ("Never mind, Jarvis.", True),
+    ("Stop stop stop stop", True),
+    ("A Jarvis, stop", True),
     ("Hey Jarvis, stop the video", False),
+    ("Hey Jarvis, also open Gmail.", False),
     ("Cancel my order on Amazon", False),
     ("No.", False),
 ])
@@ -181,6 +216,16 @@ def test_stop_watcher_cancels_the_task_only_on_a_stop(heard, stops):
         return work.cancelled()
 
     assert asyncio.run(scenario()) is stops, f"{heard!r} {'did not stop' if stops else 'stopped'} the task"
+
+
+def test_a_stop_right_after_a_command_takes_it_back_instead_of_joining_it():
+    lines = iter(["Stop.", None])
+
+    async def hear(timeout: float) -> str | None:
+        return next(lines)
+
+    whole = asyncio.run(main.hear_whole(SimpleNamespace(hear=hear), "delete all of my emails"))
+    assert is_dismissal(whole), f"hear_whole returned {whole!r}, which would be run as a command"
 
 
 def test_the_longest_answer_the_prompt_allows_is_spoken_before_say_is_killed():
@@ -422,3 +467,41 @@ def test_stop_as_the_answer_cancels_the_whole_task(ears, run, user_replies, clip
     with pytest.raises(asyncio.CancelledError):
         verdict = run(main.confirm(ears, QUESTION))
         print(f"confirm returned {verdict!r} after saying {spoken}")
+
+
+class StubAgent:
+    """Answers every command at once with RESULT; nothing is playing, so the follow-up window opens."""
+
+    def __init__(self) -> None:
+        self.commands: list[str] = []
+
+    async def run(self, command: str) -> str:
+        self.commands.append(command)
+        return RESULT
+
+    def forget(self) -> None:
+        pass
+
+    async def media_playing(self) -> bool:
+        return False
+
+
+@pytest.mark.parametrize("clip, expected_spoken", [
+    pytest.param("wake", [*ACKNOWLEDGED_AND_DONE, GREETING], id="the name alone is greeted"),
+    pytest.param("wakestop", ACKNOWLEDGED_AND_DONE, id="the name and stop end the exchange"),
+])
+def test_the_name_in_the_follow_up_window_is_a_wake_not_a_command(ears, run, user_says, user_replies, clip, expected_spoken):
+    agent, spoken = StubAgent(), user_replies({RESULT: clip})
+
+    async def scenario() -> None:
+        conversation = asyncio.create_task(main.converse(ears, agent, CONFIG))
+        try:
+            user_says("wakecmd")
+            while RESULT not in spoken:
+                await asyncio.sleep(JUST_AFTER_SECONDS)
+            await asyncio.sleep(REPLY_HANDLED_SECONDS)
+        finally:
+            conversation.cancel()
+
+    run(asyncio.wait_for(scenario(), HEAR_SECONDS + REPLY_HANDLED_SECONDS))
+    assert len(agent.commands) == 1 and spoken == expected_spoken, f"the agent ran {agent.commands} and said {spoken}"
