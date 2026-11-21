@@ -1,4 +1,4 @@
-"""The menu bar bird: on/off, mute, which browser, quit. A native helper (menubar.swift) shows it; this file runs the
+"""The menu bar bird: on/off, mute, what it works in, quit. A native helper (menubar.swift) shows it; this file runs the
 assistant on a second thread and acts on the helper's clicks."""
 import asyncio
 import queue
@@ -31,8 +31,8 @@ def start_helper() -> subprocess.Popen:
 class Beacon:
     """The assistant on its own thread, switched by the menu's actions."""
 
-    def __init__(self, in_my_chrome: bool) -> None:
-        self.in_my_chrome = in_my_chrome
+    def __init__(self, mode: str) -> None:
+        self.mode = mode
         self._muted = False
         self._ears: Ears | None = None
         self._thread: threading.Thread | None = None
@@ -45,7 +45,7 @@ class Beacon:
     def start(self) -> None:
         self._ears, self._muted = None, False
         self._loop = asyncio.new_event_loop()
-        self._assistant = self._loop.create_task(main.main(self._started, self.in_my_chrome))
+        self._assistant = self._loop.create_task(main.main(self._started, self.mode))
         self._thread = threading.Thread(target=self._run)
         self._thread.start()
 
@@ -76,15 +76,16 @@ class Beacon:
             self._loop.call_soon_threadsafe(self._ears.set_listening, not self._muted)
         elif action == "power":
             self.stop() if self.state != OFF else self.start()
-        elif action in ("own_window", "my_chrome") and self.in_my_chrome != (action == "my_chrome"):
-            self.in_my_chrome = action == "my_chrome"
+        elif action in (main.WINDOW, main.CHROME, main.MAC) and action != self.mode:
+            self.mode = action
             self.stop()
             self.start()
 
 
 def run() -> None:
-    has_token = bool(main.load_config().extension_token)
-    beacon = Beacon(in_my_chrome=has_token)
+    config = main.load_config()
+    has_token = bool(config.extension_token)
+    beacon = Beacon(config.mode)
     helper = start_helper()
     clicks: queue.Queue[str] = queue.Queue()
 
@@ -97,7 +98,7 @@ def run() -> None:
     beacon.start()
     try:
         while True:
-            helper.stdin.write(f"{beacon.state}\t{int(beacon.in_my_chrome)}\t{int(has_token)}\n")
+            helper.stdin.write(f"{beacon.state}\t{beacon.mode}\t{int(has_token)}\n")
             helper.stdin.flush()
             try:
                 action = clicks.get(timeout=STATE_CHECK_SECONDS)
