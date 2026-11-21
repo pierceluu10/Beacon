@@ -84,12 +84,16 @@ class Mac:
         self._width, self._height = Quartz.CGDisplayPixelsWide(display), Quartz.CGDisplayPixelsHigh(display)  # in points
         self._folder = Path(tempfile.mkdtemp(prefix="beacon-screen-"))
 
-    async def capture(self, *region_arguments: str, name: str = "screen.png") -> dict:
-        """A PNG of the main display (or a region of it) scaled to its size in points, as an image block. A different
-        name lets a second capture run alongside the task's."""
+    async def capture(self, region: tuple[float, float, float, float] | None = None, name: str = "screen.png") -> dict:
+        """A PNG of the main display, or of a (left, top, right, bottom) region of it magnified, scaled to fit the
+        display's size in points, as an image block. A different name lets a second capture run alongside the task's."""
         shot = self._folder / name
+        left, top, right, bottom = region or (0, 0, self._width, self._height)
+        width, height = max(right - left, 1), max(bottom - top, 1)
+        fitted = round(width * min(self._width / width, self._height / height))  # a tall region must not outgrow the screen
+        region_arguments = ["-R", f"{left},{top},{width},{height}"] if region else []
         for command in (["screencapture", "-x", "-m", "-t", "png", *region_arguments, str(shot)],
-                        ["sips", "--resampleWidth", str(self._width), str(shot)]):
+                        ["sips", "--resampleWidth", str(fitted), str(shot)]):
             process = await asyncio.create_subprocess_exec(*command, stdout=asyncio.subprocess.DEVNULL,
                                                            stderr=asyncio.subprocess.DEVNULL)
             if await process.wait():
@@ -121,8 +125,7 @@ class Mac:
         if name == "screenshot":
             return [await self.capture()]
         if name == "zoom":
-            left, top, right, bottom = arguments["region"]
-            return [await self.capture("-R", f"{left},{top},{right - left},{bottom - top}")]
+            return [await self.capture(tuple(arguments["region"]))]
         if name == "cursor_position":
             return [{"type": "text", "text": "x={:.0f}, y={:.0f}".format(*_pointer())}]
         if name == "wait":
