@@ -17,6 +17,9 @@ ELEVENLABS_STREAM = "https://api.elevenlabs.io/v1/text-to-speech/{voice}/stream"
 OUTPUT_FORMAT = "pcm_24000"  # raw 16-bit mono: playable as it arrives, and available on every plan
 OUTPUT_RATE = 24_000
 SAMPLE_BYTES = 2
+# Stopping the stream right after the last sample makes the speakers crackle; measured on a MacBook Pro, 0.25 s of
+# silence first still crackled sometimes, 0.5 s never did.
+QUIET_TAIL = bytes(OUTPUT_RATE // 2 * SAMPLE_BYTES)
 ELEVENLABS_TIMEOUT = httpx2.Timeout(10, connect=5)
 REJECTED = (401, 402, 403)  # bad key, no credits left, or the voice is not on this account: no point retrying each line
 
@@ -82,6 +85,7 @@ class Mouth:
                     whole = len(audio) - len(audio) % SAMPLE_BYTES  # a chunk can end in the middle of a sample
                     partial = audio[whole:]
                     await asyncio.to_thread(speakers.write, audio[:whole])
+                await asyncio.to_thread(speakers.write, QUIET_TAIL)
                 await asyncio.to_thread(speakers.stop)  # returns once the last of it has been played
             finally:
                 speakers.abort()  # cut off at once when cancelled; a no-op after stop

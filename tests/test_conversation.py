@@ -244,7 +244,7 @@ def test_the_elevenlabs_request_asks_for_raw_audio_in_the_chosen_voice(monkeypat
 
         def start(self) -> None: pass
         def write(self, audio: bytes) -> None: played.append(audio)
-        def stop(self) -> None: pass
+        def stop(self) -> None: played.append("stop")
         def abort(self) -> None: pass
         def close(self) -> None: pass
 
@@ -253,7 +253,10 @@ def test_the_elevenlabs_request_asks_for_raw_audio_in_the_chosen_voice(monkeypat
     request = sent[0]
     assert request.url.path == "/v1/text-to-speech/voice-id/stream" and request.url.params["output_format"] == mouth.OUTPUT_FORMAT
     assert request.headers["xi-api-key"] == "key" and json.loads(request.content) == {"text": "Hello.", "model_id": "eleven_v4_turbo"}
-    assert played[0]["samplerate"] == mouth.OUTPUT_RATE and b"".join(played[1:]) == b"\x01\x02\x03\x04", played
+    *audio, tail, stopped = played[1:]
+    assert played[0]["samplerate"] == mouth.OUTPUT_RATE and b"".join(audio) == b"\x01\x02\x03\x04", played
+    # the speakers crackle when stopped right after the voice, so half a second of silence plays first
+    assert tail == bytes(len(tail)) and len(tail) == mouth.OUTPUT_RATE // 2 * mouth.SAMPLE_BYTES and stopped == "stop", played
 
 
 @pytest.mark.parametrize("region", [(0, 0, 200, 351), (10, 10, 900, 60), None], ids=["tall zoom", "wide zoom", "screen"])
