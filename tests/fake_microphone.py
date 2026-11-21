@@ -34,6 +34,7 @@ class FakeInputStream:
         self._speech = np.zeros(0, np.float32)  # what is left of the clip being spoken
         self._noise = np.random.default_rng(NOISE_SEED)
         self._closed = threading.Event()
+        self.running = False  # like the real stream, it can be stopped and started again
         self._pump = threading.Thread(target=self._deliver_blocks, daemon=True)
 
     def __enter__(self) -> "FakeInputStream":
@@ -46,7 +47,12 @@ class FakeInputStream:
         return self._block(frames), False
 
     def start(self) -> None:
-        self._pump.start()
+        self.running = True
+        if not self._pump.is_alive():
+            self._pump.start()
+
+    def stop(self) -> None:
+        self.running = False
 
     def close(self) -> None:
         self._closed.set()
@@ -67,7 +73,8 @@ class FakeInputStream:
     def _deliver_blocks(self) -> None:
         due = time.perf_counter()
         while not self._closed.is_set():
-            self._callback(self._block(self._blocksize), self._blocksize, None, None)
+            if self.running:
+                self._callback(self._block(self._blocksize), self._blocksize, None, None)
             due += self._blocksize / RATE
             self._closed.wait(max(0, due - time.perf_counter()))
 

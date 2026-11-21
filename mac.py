@@ -9,13 +9,15 @@ import Quartz
 from anthropic import DEFAULT_TIMEOUT, AsyncAnthropic, Timeout
 from ApplicationServices import AXIsProcessTrustedWithOptions, kAXTrustedCheckOptionPrompt
 
-from agent import (ASK_TOOL, CACHED, CUT_OFF, INTERRUPTED, KEPT_BLOCK_TYPES, MAX_TOKENS, NO_ANSWER, NOTHING_TO_SAY, NOW,
-                   OUT_OF_STEPS, REFUSED, REQUEST_TIMEOUT_SECONDS, WARMUP, Ask)
+from agent import (ASK_TOOL, CACHED, INTERRUPTED, KEPT_BLOCK_TYPES, MAX_TOKENS, NO_ANSWER, NOW, OUT_OF_STEPS,
+                   REQUEST_TIMEOUT_SECONDS, WARMUP, Ask, Conversation, Narrate)
+from memory import Memory
 
 TOOLSET = "computer"
 TOOLS = [{"type": "computer_toolset_20260801"}, ASK_TOOL]
 MAX_STEPS = 60
 STALE_SCREEN = "(older screenshot removed)"
+GLANCE = "glance.png"  # the capture for a quick reply, kept apart from the task's own
 OK = "OK"
 NOT_EXECUTED = "Not executed: an earlier computer action in this turn failed."
 MAX_WAIT_SECONDS = 30
@@ -80,17 +82,19 @@ class Mac:
     def __init__(self) -> None:
         display = Quartz.CGMainDisplayID()
         self._width, self._height = Quartz.CGDisplayPixelsWide(display), Quartz.CGDisplayPixelsHigh(display)  # in points
-        self._shot = Path(tempfile.mkdtemp(prefix="beacon-screen-")) / "screen.png"
+        self._folder = Path(tempfile.mkdtemp(prefix="beacon-screen-"))
 
-    async def _capture(self, *region_arguments: str) -> dict:
-        """A PNG of the main display (or a region of it) scaled to its size in points, as an image block."""
-        for command in (["screencapture", "-x", "-m", "-t", "png", *region_arguments, str(self._shot)],
-                        ["sips", "--resampleWidth", str(self._width), str(self._shot)]):
+    async def capture(self, *region_arguments: str, name: str = "screen.png") -> dict:
+        """A PNG of the main display (or a region of it) scaled to its size in points, as an image block. A different
+        name lets a second capture run alongside the task's."""
+        shot = self._folder / name
+        for command in (["screencapture", "-x", "-m", "-t", "png", *region_arguments, str(shot)],
+                        ["sips", "--resampleWidth", str(self._width), str(shot)]):
             process = await asyncio.create_subprocess_exec(*command, stdout=asyncio.subprocess.DEVNULL,
                                                            stderr=asyncio.subprocess.DEVNULL)
             if await process.wait():
                 raise MacActionError("The screen could not be captured.")
-        data = base64.standard_b64encode(self._shot.read_bytes()).decode()
+        data = base64.standard_b64encode(shot.read_bytes()).decode()
         return {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": data}}
 
     async def _mouse(self, kind: int, point, button: int = Quartz.kCGMouseButtonLeft, clicks: int = 1, flags: int = 0) -> None:
@@ -115,10 +119,10 @@ class Mac:
         point = arguments.get("coordinate") or _pointer()
         flags = _flags(arguments.get("text")) if name in CLICKS or name in ("left_click_drag", "scroll") else 0
         if name == "screenshot":
-            return [await self._capture()]
+            return [await self.capture()]
         if name == "zoom":
             left, top, right, bottom = arguments["region"]
-            return [await self._capture("-R", f"{left},{top},{right - left},{bottom - top}")]
+            return [await self.capture("-R", f"{left},{top},{right - left},{bottom - top}")]
         if name == "cursor_position":
             return [{"type": "text", "text": "x={:.0f}, y={:.0f}".format(*_pointer())}]
         if name == "wait":
@@ -178,14 +182,14 @@ def check_permissions() -> None:
         raise MacPermissionError(NO_PERMISSION.format(missing=" or ".join(missing)))
 
 
-class MacAgent:
+class MacAgent(Conversation):
     """One conversation that operates the whole Mac. Same surface as agent.Agent, so the voice loop does not care which."""
 
-    def __init__(self, model: str, system_prompt: str, ask: Ask) -> None:
+    def __init__(self, model: str, memory: Memory, system_prompt: str, ask: Ask, narrate: Narrate) -> None:
+        super().__init__(memory, narrate)
         self._model, self._ask = model, ask
         self._system = [{"type": "text", "text": system_prompt, "cache_control": CACHED}]
         self._anthropic = AsyncAnthropic(timeout=Timeout(REQUEST_TIMEOUT_SECONDS, connect=DEFAULT_TIMEOUT.connect))
-        self._messages: list[dict] = []
         self._screens: list[dict] = []
 
     async def __aenter__(self) -> "MacAgent":
@@ -207,6 +211,10 @@ class MacAgent:
     async def media_playing(self) -> bool:
         return False  # not knowable from here; the follow-up window stays open
 
+    async def view(self) -> list[dict]:
+        """What is on screen right now, captured beside whatever the task is doing."""
+        return [await self._mac.capture(name=GLANCE)]
+
     async def run(self, command: str) -> str:
         """Carry out one spoken command and return the sentence to speak back. Cancel the task to interrupt it."""
         for screen in self._screens:  # images are large: a command keeps its own screenshots and drops earlier ones
@@ -214,19 +222,20 @@ class MacAgent:
             screen.update(type="text", text=STALE_SCREEN)
         self._screens.clear()
         try:
-            self._messages.append({"role": "user", "content": f"{command}\n\n{NOW.format(now=datetime.now())}"})
+            asked = f"{command}\n\n{NOW.format(now=datetime.now())}"
+            self._messages.append(self._opening(command, [{"type": "text", "text": asked}]))
             for _ in range(MAX_STEPS):
                 reply = await self._anthropic.messages.create(model=self._model, max_tokens=MAX_TOKENS, system=self._system,
                                                               tools=TOOLS, messages=self._messages, cache_control=CACHED)
                 if reply.stop_reason != "tool_use":
-                    said = " ".join(block.text for block in reply.content if block.type == "text").strip()
-                    answer = (REFUSED if reply.stop_reason == "refusal" else CUT_OFF if reply.stop_reason == "max_tokens"
-                              else said or NOTHING_TO_SAY)
-                    self._messages.append({"role": "assistant", "content": answer})
-                    return answer
+                    if (answer := self._finished(reply)) is not None:
+                        return answer
+                    continue
                 kept = [block for block in reply.content if block.type in KEPT_BLOCK_TYPES]
+                self._took(kept)
                 results = await self._results([block for block in kept if block.type == "tool_use"])
-                self._messages += [{"role": "assistant", "content": kept}, {"role": "user", "content": results}]
+                self._messages += [{"role": "assistant", "content": kept},
+                                   {"role": "user", "content": results + self._heard_blocks()}]
         except BaseException:
             self._messages.append({"role": "user", "content": INTERRUPTED})
             raise

@@ -9,12 +9,13 @@ import pytest
 
 import fake_microphone
 import main
+import mouth
+import side
 import voice
-from voice import Ears, MicrophoneSilentError, check_microphone, is_dismissal, is_stop, parse_yes_no, wake_command
+from voice import Ears, Heard, MicrophoneSilentError, check_microphone, is_dismissal, is_stop, parse_yes_no, wake_command
 
 CONFIG = main.Config(agent_name="Jarvis")  # the clips and the near-miss names are built around this name
 NAMES = (CONFIG.agent_name,)
-SILENT_SAY = "/usr/bin/true"
 SHORT_ECHO_TAIL_SECONDS = 0.05
 HEAR_SECONDS = 10  # ample for any clip; a test that hears nothing fails instead of hanging
 SILENCE_SECONDS = 1.0
@@ -30,10 +31,25 @@ QUESTION = "Ready to press Submit?"
 RETRY = main.CONFIRM_RETRY
 UNCLEAR = "thanks"  # the clip of an answer that is neither yes nor no
 RESULT = "Done."
-ACKNOWLEDGED_AND_DONE = [main.ACKNOWLEDGEMENT, RESULT]
-GREETING = main.GREETING.format(user_name=CONFIG.user_name)
+LONG_LINE_SECONDS = 5  # a spoken line long enough to be cut off in the middle
+CUT_OFF_SECONDS = 0.5
 REPLY_HANDLED_SECONDS = 5  # a short reply is spoken, transcribed, joined and acted on well within this
 SPEECH_SLOWER_THAN_NOMINAL = 1.2  # measured: 71 words took 24.9 s at 190 words a minute, 1.11 times the nominal 22.4 s
+
+
+class SilentMouth:
+    """Stands in for mouth.Mouth: says nothing, at once (or after `seconds`), and tells on_line what it was asked to say."""
+
+    def __init__(self) -> None:
+        self.seconds = 0.0
+        self.on_line = lambda text: None
+
+    async def speak(self, text: str) -> None:
+        self.on_line(text)
+        await asyncio.sleep(self.seconds)
+
+
+MOUTH = SilentMouth()
 
 
 @pytest.mark.parametrize("transcript, command", [
@@ -209,9 +225,18 @@ def test_is_dismissal_only_when_the_whole_utterance_declines(transcript, dismiss
 def test_stop_watcher_cancels_the_task_only_on_a_stop(heard, stops):
     async def scenario() -> bool:
         lines = asyncio.Queue()
-        lines.put_nowait(heard)
+        lines.put_nowait(Heard(heard))
         work = asyncio.create_task(asyncio.sleep(HEAR_SECONDS))
-        watcher = asyncio.create_task(main.stop_when_told(SimpleNamespace(hear=lines.get), work, NAMES))
+
+        async def say(text: str) -> None:
+            pass
+
+        async def reply(*situation: object) -> side.Reply:
+            return side.Reply("Sure.", side.CONTINUE)
+
+        agent = SimpleNamespace(task="", steps=[], view=lambda: asyncio.sleep(0, []), tell=lambda words: None)
+        watcher = asyncio.create_task(main.listen_while_working(
+            SimpleNamespace(hear=lines.get, say=say), agent, SimpleNamespace(reply=reply), lambda line: work.cancel(), NAMES))
         await asyncio.wait({work}, timeout=SCHEDULING_SLACK_SECONDS)
         watcher.cancel()
         return work.cancelled()
@@ -242,11 +267,12 @@ def test_a_stop_as_the_answer_to_a_question_ends_the_task_with_or_without_the_na
         print(f"{answer!r} was handed to the model as the answer {returned!r}")
 
 
-def test_the_longest_answer_the_prompt_allows_is_spoken_before_say_is_killed():
-    bound = re.search(r"under (\d+) words", main.SYSTEM_PROMPT)
-    assert bound, "prompt.txt does not bound the length of the spoken answer"
-    seconds = int(bound[1]) * 60 / int(voice.SAY_WORDS_PER_MINUTE) * SPEECH_SLOWER_THAN_NOMINAL
-    assert seconds < voice.SAY_TIMEOUT_SECONDS, f"{bound[1]} words take {seconds:.0f} s; say is killed after {voice.SAY_TIMEOUT_SECONDS}"
+@pytest.mark.parametrize("prompt", [main.SYSTEM_PROMPT, main.MAC_PROMPT], ids=["browser", "whole Mac"])
+def test_the_longest_answer_the_prompt_allows_is_spoken_before_say_is_killed(prompt):
+    bounds = [int(words) for words in re.findall(r"under (\d+) words", prompt)]
+    assert bounds, "the prompt does not bound the length of the spoken answer"
+    seconds = max(bounds) * 60 / int(mouth.SAY_WORDS_PER_MINUTE) * SPEECH_SLOWER_THAN_NOMINAL
+    assert seconds < mouth.SAY_TIMEOUT_SECONDS, f"{max(bounds)} words take {seconds:.0f} s; say is killed after {mouth.SAY_TIMEOUT_SECONDS}"
 
 
 @pytest.fixture
@@ -278,9 +304,8 @@ def run():
 def ears(run):
     """The real Ears on the fake microphone, loaded once; speaking is silent and nearly instant."""
     with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(voice, "SAY", SILENT_SAY)
         patch.setattr(voice, "ECHO_TAIL_SECONDS", SHORT_ECHO_TAIL_SECONDS)
-        listening = Ears(CONFIG.stt_model, list(NAMES), CONFIG.say_voice)
+        listening = Ears(CONFIG.stt_model, list(NAMES), MOUTH, wake=True)
         run(listening.__aenter__())
         yield listening
         run(listening.__aexit__(None, None, None))
@@ -315,15 +340,13 @@ def user_replies(monkeypatch, user_says):
     """Call with {line the agent speaks: clip the user answers it with}; returns the lines spoken, as they happen."""
     def answer_with(replies: dict[str, str]) -> list[str]:
         spoken: list[str] = []
-        speak = voice.speak
 
-        async def speak_and_be_answered(text: str, say_voice: str) -> None:
+        def answer(text: str) -> None:
             spoken.append(text)
-            await speak(text, say_voice)
-            if text in replies:
+            if text in replies:  # the answer starts once the line, spoken in no time, and the echo tail are over
                 asyncio.get_running_loop().call_later(REPLY_DELAY_SECONDS, user_says, replies[text])
 
-        monkeypatch.setattr(voice, "speak", speak_and_be_answered)
+        monkeypatch.setattr(MOUTH, "on_line", answer)
         return spoken
 
     return answer_with
@@ -415,19 +438,77 @@ def test_speech_nobody_was_listening_for_is_not_delivered_later(ears, run, user_
     assert stale is None, f"a listener that arrived after the speech still got {stale!r}"
 
 
-def test_nothing_is_heard_while_listening_is_switched_off_even_after_a_spoken_line(ears, run, user_says, heard):
-    async def scenario() -> str | None:
-        ears.set_listening(False)
-        await ears.say("Ready.")  # speaking must not switch the microphone back on
-        await asyncio.sleep(user_says("yes") + LINE_END_SECONDS)
-        return await ears.hear(SILENCE_SECONDS)
+@pytest.fixture
+def wake_off(ears, run):
+    """The wake word switched off: the microphone opens only for the key or a question."""
+    ears.set_wake(False)
+    run(asyncio.sleep(voice.MICROPHONE_LINGER_SECONDS + JUST_AFTER_SECONDS))
+    yield
+    ears.set_wake(True)
 
-    try:
-        muted = run(scenario())
-    finally:
-        ears.set_listening(True)
-    assert muted is None, f"heard {muted!r} with listening switched off"
-    assert voice.parse_yes_no(heard("yes")), "nothing heard after listening was switched back on"
+
+def device_open(ears: Ears) -> bool:
+    return ears._mic._sd_stream.running
+
+
+def test_with_the_wake_word_off_the_microphone_is_closed_and_nothing_is_heard(ears, run, user_says, wake_off):
+    async def scenario() -> Heard | None:
+        assert not device_open(ears), "the audio device is still open with the wake word off"
+        await ears.say("Ready.")  # speaking must not switch the microphone back on
+        assert not device_open(ears), "speaking reopened the audio device"
+        watcher = asyncio.create_task(ears.hear())
+        await asyncio.sleep(user_says("wakecmd") + LINE_END_SECONDS)
+        watcher.cancel()
+        return None if watcher.cancelled() or not watcher.done() else watcher.result()
+
+    assert run(scenario()) is None
+
+
+def test_with_the_wake_word_off_a_question_still_opens_the_microphone_for_its_answer(ears, run, user_says, wake_off):
+    async def scenario() -> Heard | None:
+        question = asyncio.create_task(ears.hear(HEAR_SECONDS))
+        await asyncio.sleep(JUST_AFTER_SECONDS)
+        assert device_open(ears) and ears.activity == voice.HEARING, "the microphone stayed closed for the answer"
+        user_says("yes")
+        return await question
+
+    answer = run(scenario())
+    assert parse_yes_no(answer) is True, f"heard {answer!r}"
+    run(asyncio.sleep(voice.MICROPHONE_LINGER_SECONDS + JUST_AFTER_SECONDS))
+    assert not device_open(ears), "the microphone stayed open after the answer"
+
+
+def test_holding_the_key_hears_one_whole_utterance_even_across_a_pause(ears, run, user_says, wake_off):
+    async def scenario() -> Heard | None:
+        watcher = asyncio.create_task(ears.hear())
+        ears.push(True)
+        assert device_open(ears) and ears.activity == voice.HEARING, "the key did not open the microphone"
+        await asyncio.sleep(user_says("pause_700") + LINE_END_SECONDS)
+        assert not watcher.done(), f"delivered {watcher.result()!r} before the key was let go"
+        ears.push(False)
+        return await asyncio.wait_for(watcher, HEAR_SECONDS)
+
+    heard = run(scenario())
+    assert heard.pushed and "youtube" in heard.lower() and "search" in heard.lower(), f"heard {heard!r}"
+    assert main.addressed(heard, NAMES) and "search" in main.addressed(heard, NAMES).lower()
+    assert not device_open(ears), "the microphone stayed open after the key was let go"
+
+
+def test_the_key_cuts_off_what_beacon_is_saying(ears, run, monkeypatch):
+    monkeypatch.setattr(MOUTH, "seconds", LONG_LINE_SECONDS)
+
+    async def scenario() -> float:
+        started = time.perf_counter()
+        speaking = asyncio.create_task(ears.say("A long answer."))
+        await asyncio.sleep(CUT_OFF_SECONDS)
+        assert ears.activity == voice.SPEAKING, ears.activity
+        ears.push(True)
+        await speaking
+        ears.push(False)
+        return time.perf_counter() - started
+
+    took = run(scenario())
+    assert took < CUT_OFF_SECONDS + SCHEDULING_SLACK_SECONDS, f"say ran for {took:.2f} s after the key was pressed"
 
 
 def test_the_recogniser_is_restarted_so_it_does_not_keep_every_line_it_ever_heard(ears, heard):
@@ -523,15 +604,13 @@ class StubAgent:
         return False
 
 
-@pytest.mark.parametrize("clip, expected_spoken", [
-    pytest.param("wake", [*ACKNOWLEDGED_AND_DONE, GREETING], id="the name alone is greeted"),
-    pytest.param("wakestop", ACKNOWLEDGED_AND_DONE, id="the name and stop end the exchange"),
-])
-def test_the_name_in_the_follow_up_window_is_a_wake_not_a_command(ears, run, user_says, user_replies, clip, expected_spoken):
+@pytest.mark.parametrize("clip", ["wake", "wakestop"], ids=["the name alone", "the name and stop"])
+def test_the_name_in_the_follow_up_window_is_a_wake_not_a_command(ears, run, user_says, user_replies, clip):
     agent, spoken = StubAgent(), user_replies({RESULT: clip})
+    memory = SimpleNamespace(stamp=tuple)
 
     async def scenario() -> None:
-        conversation = asyncio.create_task(main.converse(ears, agent, CONFIG))
+        conversation = asyncio.create_task(main.converse(ears, agent, SimpleNamespace(), memory, CONFIG))
         try:
             user_says("wakecmd")
             while RESULT not in spoken:
@@ -541,4 +620,4 @@ def test_the_name_in_the_follow_up_window_is_a_wake_not_a_command(ears, run, use
             conversation.cancel()
 
     run(asyncio.wait_for(scenario(), HEAR_SECONDS + REPLY_HANDLED_SECONDS))
-    assert len(agent.commands) == 1 and spoken == expected_spoken, f"the agent ran {agent.commands} and said {spoken}"
+    assert len(agent.commands) == 1 and spoken == [RESULT], f"the agent ran {agent.commands} and said {spoken}"

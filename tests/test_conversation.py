@@ -1,0 +1,256 @@
+"""Memory, the menu's saved settings, the quick side replies, the ElevenLabs voice and its fallback, and how a running task
+takes the user's words and speaks its first line. No microphone, no API request, no sound."""
+import asyncio
+import base64
+import copy
+import json
+from pathlib import Path
+from types import SimpleNamespace
+
+import httpx2
+import pytest
+from anthropic.types import Message
+
+import mac
+import memory
+import menubar
+import mouth
+import side
+from agent import SAID_STEP, USER_SAID
+from memory import Memory
+
+NEVER_SENT = "never sent: these tests make no API request"
+NOTES = "My name is Sam. Keep replies short."
+PNG = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")
+PDF = b"%PDF-1.4\n%%EOF\n"
+SCREEN = [{"type": "text", "text": "a screenshot"}]
+
+
+def reply(stop_reason: str, *content: dict) -> Message:
+    return Message.model_validate({"id": "msg_scripted", "type": "message", "role": "assistant", "model": NEVER_SENT,
+                                   "stop_reason": stop_reason, "usage": {"input_tokens": 0, "output_tokens": 0},
+                                   "content": list(content)})
+
+
+def text(words: str) -> dict:
+    return {"type": "text", "text": words}
+
+
+def tool_use(name: str, arguments: dict, number: int = 0) -> dict:
+    return {"type": "tool_use", "id": f"toolu_{number}", "name": name, "input": arguments}
+
+
+@pytest.fixture
+def remembered(tmp_path: Path) -> Memory:
+    return Memory(tmp_path / "memory.md", tmp_path / "memory")
+
+
+def test_an_empty_memory_adds_nothing(remembered: Memory) -> None:
+    assert remembered.blocks() == [] and remembered.notes() == ""
+
+
+def test_memory_holds_the_notes_and_each_file_in_a_form_the_api_reads(remembered: Memory) -> None:
+    remembered.notes_path.write_text(NOTES)
+    remembered.folder.mkdir()
+    (remembered.folder / "about.txt").write_text("I live in Toronto.")
+    (remembered.folder / "photo.png").write_bytes(PNG)
+    (remembered.folder / "resume.pdf").write_bytes(PDF)
+    (remembered.folder / "archive.zip").write_bytes(b"PK\x03\x04\xff\xfe")
+    (remembered.folder / ".DS_Store").write_bytes(b"\x00")
+    blocks = remembered.blocks()
+    kinds = [block["type"] for block in blocks]
+    texts = " | ".join(block["text"] for block in blocks if block["type"] == "text")
+    assert kinds == ["text", "text", "text", "text", "text", "image", "text", "document"], kinds
+    assert NOTES in texts and "I live in Toronto." in texts and "archive.zip (not readable here" in texts, texts
+    assert ".DS_Store" not in texts, "a hidden file was sent"
+    assert blocks[5]["source"]["media_type"] == "image/png" and blocks[7]["source"]["media_type"] == "application/pdf"
+
+
+def test_a_file_too_large_to_send_is_named_but_not_read(remembered: Memory, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(memory, "MAX_FILE_BYTES", 4)
+    remembered.folder.mkdir()
+    (remembered.folder / "big.txt").write_text("more than four bytes")
+    blocks = remembered.blocks()
+    assert len(blocks) == 2 and "big.txt (not readable here" in blocks[1]["text"], blocks
+
+
+def test_the_memory_stamp_changes_with_the_notes_and_the_files(remembered: Memory) -> None:
+    before = remembered.stamp()
+    remembered.notes_path.write_text(NOTES)
+    with_notes = remembered.stamp()
+    remembered.folder.mkdir()
+    (remembered.folder / "a.txt").write_text("a")
+    assert len({before, with_notes, remembered.stamp()}) == 3
+
+
+def test_settings_start_from_the_defaults_and_keep_only_known_keys(tmp_path: Path) -> None:
+    path = tmp_path / "settings.json"
+    assert menubar.load_settings(path) == menubar.DEFAULT_SETTINGS
+    path.write_text(json.dumps({"wake": False, "mode": "window", "volume": 11}))
+    loaded = menubar.load_settings(path)
+    assert loaded == {"mode": "window", "wake": False, "hotkey": menubar.DEFAULT_HOTKEY}, loaded
+
+
+def test_menu_choices_are_saved_and_reach_the_running_ears(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(menubar, "SETTINGS", tmp_path / "settings.json")
+    monkeypatch.setattr(menubar.save_settings, "__defaults__", (tmp_path / "settings.json",))
+    beacon = menubar.Beacon(dict(menubar.DEFAULT_SETTINGS))
+    calls = []
+    beacon._loop = SimpleNamespace(call_soon_threadsafe=lambda method, *arguments: calls.append((method, arguments)))
+    beacon._ears = SimpleNamespace(activity="ready", set_wake="set_wake", push="push")
+    beacon._thread = SimpleNamespace(is_alive=lambda: True)
+    chosen = {"code": 96, "modifiers": 0, "label": "F5"}
+    for message in ({"action": "wake"}, {"action": "hotkey", "hotkey": chosen}, {"action": "push", "down": True}):
+        beacon.act(message)
+    saved = json.loads((tmp_path / "settings.json").read_text())
+    assert saved == {"mode": "mac", "wake": False, "hotkey": chosen}, saved
+    assert calls == [("set_wake", (False,)), ("push", (True,))], calls
+
+
+def test_while_starting_or_off_the_key_reaches_nothing() -> None:
+    beacon = menubar.Beacon(dict(menubar.DEFAULT_SETTINGS))
+    beacon._loop = SimpleNamespace(call_soon_threadsafe=lambda *call: pytest.fail("reached a loop that is not running"))
+    beacon.act({"action": "push", "down": True})  # off: no thread at all
+    beacon._thread = SimpleNamespace(is_alive=lambda: True)
+    assert beacon.state == menubar.STARTING
+    beacon.act({"action": "push", "down": True})
+
+
+class ScriptedAnthropic:
+    """Stands in for AsyncAnthropic: plays the given replies and keeps a copy of every request."""
+
+    def __init__(self, *replies: Message) -> None:
+        self.requests: list[dict] = []
+        self._replies = list(replies)
+        self.messages = SimpleNamespace(create=self._create)
+
+    async def _create(self, **request: object) -> Message:
+        self.requests.append(copy.deepcopy(request))
+        return self._replies.pop(0)
+
+    async def close(self) -> None:
+        pass
+
+
+def test_a_quick_reply_is_read_from_the_forced_tool_and_sees_the_screen() -> None:
+    quick = side.Side(NEVER_SENT, "Beacon")
+    quick._anthropic = ScriptedAnthropic(
+        reply("tool_use", tool_use("reply", {"say": "Your inbox, with three unread.", "then": "continue"})),
+        reply("tool_use", tool_use("reply", {"say": "Okay.", "then": "rethink"})))
+    answer = asyncio.run(quick.reply("what are you seeing?", "check my email", ["screenshot {}"], SCREEN))
+    request = quick._anthropic.requests[0]
+    assert answer == side.Reply("Your inbox, with three unread.", side.CONTINUE), answer
+    assert request["tool_choice"] == {"type": "tool", "name": "reply"}, request["tool_choice"]
+    assert request["messages"][0]["content"][0] == SCREEN[0] and "what are you seeing?" in request["messages"][0]["content"][1]["text"]
+    unknown = asyncio.run(quick.reply("hm", "check my email", [], []))
+    assert unknown.then == side.CONTINUE, "an unknown decision must leave the task alone"
+
+
+def test_the_greeting_is_written_from_the_notes() -> None:
+    quick = side.Side(NEVER_SENT, "Beacon")
+    quick._anthropic = ScriptedAnthropic(reply("end_turn", text("Hey Sam, what are we doing today?")),
+                                         reply("end_turn", text("Hey, what are we doing today?")))
+    assert asyncio.run(quick.greet(NOTES)) == "Hey Sam, what are we doing today?"
+    asyncio.run(quick.greet(""))
+    sent = [request["messages"][0]["content"] for request in quick._anthropic.requests]
+    assert NOTES in sent[0] and sent[1] == side.NO_NOTES, sent
+
+
+class ScriptedMac:
+    """Records actions; on the first one, the user speaks to the running task."""
+
+    def __init__(self, driver: mac.MacAgent, words: str) -> None:
+        self.actions: list[str] = []
+        self._driver, self._words = driver, words
+
+    async def act(self, name: str, arguments: dict) -> list[dict]:
+        if not self.actions:
+            self._driver.tell(self._words)
+        self.actions.append(name)
+        return [{"type": "text", "text": mac.OK}]
+
+
+def test_a_running_task_speaks_its_first_line_reads_memory_once_and_takes_words_said_mid_task(remembered: Memory) -> None:
+    remembered.notes_path.write_text(NOTES)
+    narrated: list[str] = []
+    driver = mac.MacAgent(NEVER_SENT, remembered, "prompt", lambda question: None, narrated.append)
+    driver._mac = ScriptedMac(driver, "use Gmail, not Outlook")
+    driver._anthropic = ScriptedAnthropic(
+        reply("tool_use", text("Opening your mail."), tool_use("left_click", {"coordinate": [1, 2]}, 1)),
+        reply("tool_use", text("Switching to Gmail."), tool_use("key", {"text": "cmd+t"}, 2)),
+        reply("end_turn", text("Gmail is open.")),
+        reply("end_turn", text("Done.")))
+    answer = asyncio.run(driver.run("check my mail"))
+    requests = driver._anthropic.requests
+    second_turn = requests[1]["messages"][-1]["content"]
+    assert answer == "Gmail is open.", answer
+    assert narrated == ["Opening your mail."], f"spoken mid-task: {narrated}"
+    assert second_turn[-1] == text(USER_SAID.format(words="use Gmail, not Outlook")), second_turn
+    assert driver.steps[0] == SAID_STEP.format(text="Opening your mail.") and driver.steps[1].startswith("left_click")
+    asyncio.run(driver.run("thanks"))
+    openings = [message["content"] for message in driver._messages if message["role"] == "user"
+                and isinstance(message["content"], list) and message["content"][0].get("text") == memory.HEADER]
+    assert len(openings) == 1, "the memory was sent again in the same conversation"
+
+
+def test_words_that_arrive_as_the_task_finishes_carry_it_on(remembered: Memory) -> None:
+    driver = mac.MacAgent(NEVER_SENT, remembered, "prompt", lambda question: None, lambda line: None)
+    driver._anthropic = ScriptedAnthropic(reply("end_turn", text("Opened Notes.")), reply("end_turn", text("Added it.")))
+    original = driver._anthropic.messages.create
+
+    async def told_during_the_call(**request: object) -> Message:
+        answer = await original(**request)
+        if len(driver._anthropic.requests) == 1:
+            driver.tell("and add milk")
+        return answer
+
+    driver._anthropic.messages.create = told_during_the_call
+    answer = asyncio.run(driver.run("open Notes"))
+    assert answer == "Added it.", f"the user's late words were dropped and it said {answer!r}"
+    assert driver._anthropic.requests[1]["messages"][-1]["content"] == [text(USER_SAID.format(words="and add milk"))]
+
+
+def stream(handler) -> mouth.Mouth:
+    voice = mouth.Mouth("voice-id", "eleven_v4_turbo", "Samantha")
+    voice._key = "key"
+    voice._http = httpx2.AsyncClient(transport=httpx2.MockTransport(handler))
+    return voice
+
+
+@pytest.mark.parametrize(("status", "keeps_key"), [(401, False), (402, False), (500, True)])
+def test_a_refused_line_is_spoken_by_macos_and_a_dead_key_is_not_tried_again(
+        monkeypatch: pytest.MonkeyPatch, status: int, keeps_key: bool) -> None:
+    said = []
+
+    async def say(text: str, voice: str) -> None:
+        said.append((text, voice))
+
+    monkeypatch.setattr(mouth, "say", say)
+    voice = stream(lambda request: httpx2.Response(status))
+    asyncio.run(voice.speak("Hello."))
+    assert said == [("Hello.", "Samantha")] and bool(voice._key) is keeps_key, (said, voice._key)
+
+
+def test_the_elevenlabs_request_asks_for_raw_audio_in_the_chosen_voice(monkeypatch: pytest.MonkeyPatch) -> None:
+    sent, played = [], []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        sent.append(request)
+        return httpx2.Response(200, content=b"\x01\x02\x03\x04\x05")  # an odd byte count: half a sample at the end
+
+    class Speakers:
+        def __init__(self, **settings: object) -> None:
+            played.append(settings)
+
+        def start(self) -> None: pass
+        def write(self, audio: bytes) -> None: played.append(audio)
+        def stop(self) -> None: pass
+        def abort(self) -> None: pass
+        def close(self) -> None: pass
+
+    monkeypatch.setattr(mouth.sounddevice, "RawOutputStream", Speakers)
+    asyncio.run(stream(handler).speak("Hello."))
+    request = sent[0]
+    assert request.url.path == "/v1/text-to-speech/voice-id/stream" and request.url.params["output_format"] == mouth.OUTPUT_FORMAT
+    assert request.headers["xi-api-key"] == "key" and json.loads(request.content) == {"text": "Hello.", "model_id": "eleven_v4_turbo"}
+    assert played[0]["samplerate"] == mouth.OUTPUT_RATE and b"".join(played[1:]) == b"\x01\x02\x03\x04", played

@@ -2,54 +2,129 @@
   <img src="logo.png" width="96" alt="Beacon logo: a small bird in a white rounded square">
 </p>
 <h1 align="center"><code>beacon</code></h1>
-<p align="center"><b>Say its name, speak a command, watch Chrome do it.</b></p>
+<p align="center"><b>Talk to your Mac. Watch it do the work.</b></p>
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="MIT license"></a>
   <img src="https://img.shields.io/badge/macOS-Apple%20silicon-lightgrey" alt="macOS on Apple silicon">
   <img src="https://img.shields.io/badge/python-3.12-blue" alt="Python 3.12">
 </p>
 
-Beacon is a voice assistant that drives a real, visible Chrome window. Say "Hey Beacon", speak a command, and watch
-it navigate, type and click. Speech runs on your Mac; the only paid service is the Anthropic API.
+Beacon is a voice computer-use agent for macOS. Hold a key or say "Hey Beacon", say what you want, and it works
+on your screen with the real mouse and keyboard, in any app. Talk to it while it works: ask what it sees, change
+the plan, or tell it to stop.
 
 ```
-You:    "Hey Beacon."
-Beacon: "Hi Pierce."
-You:    "Go to YouTube and search for lo-fi hip hop radio."
-Beacon: "On it."            (Chrome navigates, types and clicks while you watch)
-Beacon: "The results are up. The first one is a live stream."
+Beacon: "Hey Sam, what are we doing today?"
+You:    (holding ⌥Space) "Find a quiet café near me that's open late and add it to my calendar for Friday."
+Beacon: "Looking that up in Maps."
+You:    (holding ⌥Space) "What are you seeing right now?"
+Beacon: "Three cafés on the map; the closest is open till eleven."
+You:    (holding ⌥Space) "Actually make it Saturday."
+Beacon: "Got it, Saturday."
 ```
 
-Speech recognition and speech output run on this Mac. The only paid service is the Anthropic API.
+Speech recognition runs on this Mac. The paid services are the Anthropic API and, if you add a key, ElevenLabs.
 
 ## Run it
 
 ```bash
 export ANTHROPIC_API_KEY=...       # if it is not already in your shell profile
+export ELEVENLABS_API_KEY=...      # optional: a natural voice instead of macOS `say`
 uv sync
 uv run python main.py
 ```
 
-The first run asks for microphone access for your terminal and opens a Chrome window with its own profile
+The first run asks for microphone access for your terminal, then Screen Recording and Accessibility (System
+Settings, Privacy and Security). Allow them, quit and reopen the terminal, and start Beacon again. It greets you
+by name if your memory says who you are.
+
+## Talking to it
+
+Two ways in, and both can be on at once:
+
+- **Push to talk**: hold the key (⌥Space by default), speak, let go. Everything said while the key is down is one
+  command, pauses included. Pressing it while Beacon is talking cuts it off.
+- **"Hey Beacon"**: say the name and the command in one breath, or say the name, wait for the chime, then speak.
+  The microphone listens all the time for the name while this is on. Switch it off in the menu to keep the
+  microphone closed until you hold the key.
+
+After it answers you have 8 seconds to follow up without the name or the key.
+
+### While it works
+
+Hold the key or say "Hey Beacon" in the middle of a task:
+
+- **Ask**: "what are you seeing right now?", "how far along are you?". A fast model looks at the screen and the
+  steps so far and answers in a sentence; the task keeps going.
+- **Redirect**: "use Safari instead", "make it Saturday". It answers and the change reaches the agent at its next
+  step.
+- **Stop**: "stop", "stop, Beacon", "never mind, cancel that".
+
+Before a task it says one short line of what it is about to do, written by the model, not a canned "On it".
+
+## The menu bar
+
+The bird at the top right shows what Beacon is doing:
+
+| Glyph | Meaning |
+|---|---|
+| bird alone | Ready. |
+| microphone | Hearing you. |
+| dots, pulsing | Working, or starting up. |
+| waveform | Speaking. |
+| dimmed bird | Off. |
+
+Click it for:
+
+- **Listen for “Hey Beacon”**: the wake-word switch.
+- **Push-to-Talk Key…**: press a new combination in the small window that opens. It needs ⌃, ⌥ or ⌘, or a
+  function key on its own; Esc cancels.
+- **Memory…**: see below.
+- **Works in**: **My whole Mac** (the default), **My Chrome** (needs `extension_token`) or **Separate Chrome
+  window** (its own profile). Switching restarts Beacon.
+- **Turn Off / Turn On**: closes the microphone and the browser but keeps the icon.
+- **Quit Beacon**: closes everything, as does Ctrl-C in the terminal.
+
+The key, the wake-word switch and the mode are saved in `~/.beacon/settings.json`.
+
+## Memory
+
+**Memory…** in the menu opens a small window with two parts:
+
+- **Notes**: plain text, saved as you type to `~/.beacon/memory.md`. Write who you are, how you like things done,
+  facts for forms. Beacon follows the notes like instructions, and the greeting uses the name it finds there.
+- **Files**: add with the button or drag them in. They are copied to `~/.beacon/memory/`. PDFs, images and text
+  files are read; other files and anything over 10 MB are named so the agent knows they exist. Remove moves a
+  file to the Trash.
+
+Memory goes into the first message of each conversation, and editing it starts a fresh conversation. In the
+browser modes the memory folder is also the only place uploads come from, so keep only files you are happy to
+send. Never put passwords in memory.
+
+## Voice
+
+With `ELEVENLABS_API_KEY` set, Beacon streams speech from ElevenLabs (`eleven_v4_turbo`, voice "George") straight to the
+speakers, so it starts talking in about a tenth of a second. Change `voice` in the config to any voice id from
+your ElevenLabs library. If the key is rejected or out of credits it says so in the terminal and uses macOS
+`say` for the rest of the run; a network error falls back for that line only.
+
+## Work on your whole Mac
+
+The default. Beacon sees your screen through screenshots and uses the real mouse and keyboard, with whatever you
+are logged in to. "This" means what is in front of you.
+
+- There is no spoken confirmation in this mode. It does what you ask, including sending, buying and deleting.
+  Stop it by voice or the key.
+- It works on the main display only, and it moves your real pointer, so keep your hands off while it works.
+- Every step sends a screenshot of your screen to the Anthropic API, including anything visible on it.
+- It is slower and costs more per step than the browser modes, because it reads pictures instead of page text.
+
+## Work in a browser
+
+**Works in > Separate Chrome window** drives a visible Chrome window with its own profile
 (`~/.beacon/chrome-profile`). Log in to the sites you want it to use in that window once; the logins persist.
-When you hear "Ready", say "Hey Beacon".
+In the browser modes:
 
-A bird icon appears in the menu bar at the top right while it runs. Click it for:
-
-- **Mute**: stops the microphone; nothing is heard or transcribed, and a running task cannot be stopped by voice.
-- **Turn Off / Turn On**: closes the browser and the microphone but keeps the icon, so you can start it again.
-- **Works in**: **My whole Mac**, **My Chrome** (needs `extension_token`) or **Separate Chrome window** (its own
-  profile). Switching restarts Beacon; the choice is not saved, and it starts in the `mode` from your config.
-- **Quit Beacon**: closes everything and exits, as does Ctrl-C.
-
-The small text beside the bird says `…` while starting, `muted` or `off`.
-
-- Say the name and the command in one breath, or say the name, wait for "Hi Pierce", then speak.
-- After it answers you have 8 seconds to give a follow-up without the name, unless a video or audio is playing:
-  then say the name again, so the video's speech is not taken as a command.
-- Say "stop" while it is working, or as the answer to one of its questions, to cancel; "Stop, Beacon" and
-  "Stop! Stop!" work too. "Thanks" or silence ends the exchange, and so does "stop" when nothing is running: to
-  stop a video, say "Hey Beacon, pause the video".
 - It asks out loud before anything that submits, sends, pays, books, posts or deletes: a button or short link whose
   label says so, a form's own button labelled apply, complete, order, payment or booking, a button it can read no name
   for ("this button"), and Enter in a field that is not a search box. Only a short plain yes ("yes", "yeah", "sure", "go ahead", "do it")
@@ -57,27 +132,15 @@ The small text beside the bird says `…` while starting, `muted` or `off`.
 - It is told never to type passwords, card numbers or verification codes and never to solve CAPTCHAs, and the
   gate refuses the fields it recognises as such (see Limits). It asks you to do those in the window, press the
   page's own sign-in or pay button yourself, and say "continue".
-- When a command has a real fork (two postings with the same title, two saved addresses) and the choice is not
-  cheaply undone, it asks which you mean. Otherwise it picks the likeliest and tells you which. It asks one
-  question at a time.
-- It knows the local date and time, so it answers those without opening a site.
-- Ctrl-C in the terminal quits, also in the middle of a task. When a spoken error says the reason is in the
-  terminal, it is printed there; API errors during a task are printed too.
+- When a command has a real fork and the choice is not cheaply undone, it asks which you mean. Otherwise it picks
+  the likeliest and tells you which.
+- Say "Hey Beacon, pause the video" while media plays: a follow-up without the name is not taken while a video or
+  audio is playing, so its speech is not mistaken for a command.
 
-## Job applications
+### Summon it to the page you're on
 
-1. Put your resume at `~/.beacon/uploads/resume.pdf`. Every file in that folder can be attached by the agent, so
-   keep only files you are happy to send.
-2. Write `~/.beacon/facts.md` in plain text: name, email, phone, links, location, work authorization, notice
-   period, salary expectations. It answers form questions only from this file and what you say; anything
-   missing, it asks you. No passwords.
-3. Open the job posting in your own Chrome or in its window (or tell it the address) and say "Hey Beacon, apply to
-   this job with my resume".
-
-## Summon it to the page you're on
-
-With a page open in your everyday Chrome and that Chrome in front, say "Hey Beacon, apply to this job" or "Hey
-Beacon, what is this page about?". It opens the same address in its own window and works there. Your everyday
+In a browser mode, with a page open in your everyday Chrome and that Chrome in front, say "Hey Beacon, what is
+this page about?". It opens the same address in its own window and works there. Your everyday
 Chrome is only read, never controlled.
 
 - The first time, macOS asks whether your terminal may control Google Chrome. Click Allow and say the command
@@ -93,29 +156,15 @@ Chrome is only read, never controlled.
   `blocked_hosts` only the site's name is sent; for a local file, a `chrome://` page or another address it may
   not open, only the reason.
 
-## Work on your whole Mac
+### Work in your own Chrome (opt-in)
 
-Set `mode = "mac"` in `~/.beacon/config.toml`, or pick **Works in > My whole Mac** from the bird menu. Beacon then
-sees your screen through screenshots and uses the real mouse and keyboard, in any app, with whatever you are
-logged in to. "This" means what is in front of you.
-
-- macOS asks twice for your terminal app: **Screen Recording** and **Accessibility** (System Settings, Privacy and
-  Security). Allow both, quit and reopen the terminal, and start Beacon again.
-- There is no spoken confirmation in this mode. It does what you ask, including sending, buying and deleting.
-  Say "stop" to cancel a running task; it cannot hear you while it is speaking.
-- It works on the main display only, and it moves your real pointer, so keep your hands off while it works.
-- Every step sends a screenshot of your screen to the Anthropic API, including anything visible on it.
-- It is slower and costs more per step than the browser modes, because it reads pictures instead of page text.
-
-## Work in your own Chrome (opt-in)
-
-By default Beacon drives its own Chrome window with its own logins. To have it work in a tab of the Chrome you
-already use, with your logins:
+To have it work in a tab of the Chrome you already use, with your logins:
 
 1. Install the Playwright Extension from the Chrome Web Store:
    `https://chromewebstore.google.com/detail/playwright-extension/mmlmfjhmonkocbjadbfplnigmagldckm`
 2. Click its toolbar icon and copy the value after `PLAYWRIGHT_MCP_EXTENSION_TOKEN=`.
-3. Put `extension_token = "..."` and `mode = "chrome"` in `~/.beacon/config.toml`, then `chmod 600 ~/.beacon/config.toml`.
+3. Put `extension_token = "..."` in `~/.beacon/config.toml`, run `chmod 600 ~/.beacon/config.toml`, and pick
+   **Works in > My Chrome**.
 
 Beacon then opens one tab in your Chrome (in a "Playwright" tab group) and works there. Know what you are
 trading:
@@ -132,37 +181,40 @@ This mode passed the gate tests on a stand-in Chrome. It has not been tried on a
 
 ## Configuration
 
-Optional, in `~/.beacon/config.toml`. Unknown keys are an error.
+Optional, in `~/.beacon/config.toml`. Unknown keys are an error. The menu's choices live in
+`~/.beacon/settings.json`, not here.
 
 | Key | Default | Meaning |
 |---|---|---|
 | `agent_name` | `"Beacon"` | The wake name, one word. Any name works; no training. |
 | `wake_aliases` | `[]` | Other spellings the recogniser produces for your name. |
-| `user_name` | `"Pierce"` | Used in the greeting. |
 | `model` | `"claude-opus-5-5"` | Any Anthropic model id. The tests run on the default; `claude-sonnet-5-5` was tried by hand on multi-step tasks. |
+| `quick_model` | `"claude-haiku-5-5"` | The greeting and the quick replies while a task runs. |
 | `profile_dir` | `"~/.beacon/chrome-profile"` | The agent's own Chrome profile. |
-| `resume_path` | `"~/.beacon/uploads/resume.pdf"` | "My resume". Its folder is the only place uploads can come from. |
-| `facts_path` | `"~/.beacon/facts.md"` | Facts about you for forms. |
 | `blocked_hosts` | `[]` | Sites it may never navigate to, for example your bank. Links and redirects that land there are not checked. |
 | `stt_model` | `"MEDIUM_STREAMING"` | Or `"SMALL_STREAMING"` (less memory, slightly less accurate). |
-| `say_voice` | `"Samantha"` | Any voice from `say -v '?'`. |
-| `mode` | `"window"` | What it works in: `"window"` (its own Chrome window), `"chrome"` (your Chrome, needs `extension_token`) or `"mac"` (your whole Mac). |
+| `voice` | `"JBFqnCBsd6RMkjVDRZzb"` | ElevenLabs voice id, used when `ELEVENLABS_API_KEY` is set. |
+| `voice_model` | `"eleven_v4_turbo"` | ElevenLabs model. |
+| `say_voice` | `"Samantha"` | The macOS voice without an ElevenLabs key; any voice from `say -v '?'`. |
 | `extension_token` | `""` | Set it to work in your own Chrome through the Playwright Extension (see above). |
 
 ## How it works
 
 | File | Job |
 |---|---|
-| `main.py` | Configuration and the conversation loop. |
-| `voice.py` | Moonshine speech-to-text on the microphone, macOS `say`, and wake / yes / no / stop parsing. |
+| `main.py` | Configuration and the conversation loop, including listening while a task runs. |
+| `voice.py` | Moonshine speech-to-text on the microphone, push-to-talk, and wake / yes / no / stop parsing. |
+| `mouth.py` | Speech out: ElevenLabs streaming, or macOS `say` without a key. |
+| `side.py` | The fast model behind the greeting and the quick replies mid-task. |
+| `memory.py` | Turns your notes and memory files into the first message of a conversation. |
 | `agent.py` | Claude driving Chrome through the Playwright MCP server. |
 | `gate.py` | The rules for what needs a spoken yes and what is refused. |
 | `inspect.js` | Runs in the page to describe the element a click or key press would hit, so the gate judges the real DOM, not the model's description. |
 | `everyday.py` | Reads the address and title of the front tab of your everyday Chrome when that Chrome is the app in front. |
 | `front_tab.js` | The macOS script `everyday.py` runs. It addresses the Chrome in front by process id, because every Chrome answers to the same name. |
-| `menubar.py`, `menubar.swift`, `bird.png` | The menu bar icon and its menu. macOS 26 does not show a menu bar item made by Python, so a small native helper shows it; it is compiled on first run and needs the Xcode command line tools (`xcode-select --install`). |
+| `menubar.py`, `menubar.swift`, `bird.png` | The menu bar icon, its menu, the push-to-talk key, the key recorder and the Memory window. macOS 26 does not show a menu bar item made by Python, so a small native helper shows it; it is compiled on first run and needs the Xcode command line tools (`xcode-select --install`). |
 | `mac.py`, `mac_prompt.txt` | The whole-Mac mode: screenshots, mouse and keyboard through Anthropic's computer toolset. |
-| `prompt.txt` | The system prompt. |
+| `prompt.txt` | The system prompt for the browser modes. |
 
 ## Tests
 
@@ -175,7 +227,7 @@ No test needs a microphone or a person: clips are made with `say` and fed throug
 
 ## Limits
 
-- The gate reads the labels the page wrote. A form's Next, Continue, Save or Sign in button is pressed without
+- In the browser modes, the gate reads the labels the page wrote. A form's Next, Continue, Save or Sign in button is pressed without
   a question, also when it is the step that places an order, and a hostile page can label a pay button "Next".
   The prompt tells the model to ask you first when it suspects such a step; you watching the window is the last
   defence. Keep banking and your main email out of this profile.
@@ -195,12 +247,13 @@ No test needs a microphone or a person: clips are made with `say` and fed throug
 - It opens only plain `http://` and `https://` addresses: no user names, escapes or non-English letters in the
   site name. `localhost` and numeric addresses of this machine or your home network are refused; a site name
   that resolves to this machine is not checked.
-- It cannot hear you while it is speaking. After a bare "Hey Beacon", say the command in the same breath or wait
-  for "Hi Pierce": a command begun a second or two after the name is talked over, and only its end is acted on.
-- A pause longer than about a second in the middle of a command cuts the command off.
+- It cannot hear the wake word while it is speaking; hold the key to cut it off.
+- Without the key, a pause longer than about a second in the middle of a command cuts the command off.
+- A redirect reaches the agent after the step it is on, so one more action may happen first.
+- The push-to-talk key is taken from every other app while Beacon runs.
 - The prompt tells it not to automate LinkedIn (its terms forbid it). Nothing in code enforces that; add
   `linkedin.com` to `blocked_hosts` to make it a rule.
 - A browser call that gets no answer for 45 seconds (a frozen page), or a browser server that dies, ends the
   program with one spoken line. Start it again.
-- A command stops after 40 steps, and a single step that needs more than about 3,000 words of writing is cut off
+- A command stops after 40 steps (60 on the whole Mac), and a single step that needs more than about 3,000 words of writing is cut off
   and reported as such.
