@@ -56,6 +56,7 @@ ADDRESS_REFUSAL = "Only plain http and https addresses are allowed"
 BUSY_SECONDS = 3
 BUSY_JS = f"() => {{ const end = Date.now() + {BUSY_SECONDS * 1000}; while (Date.now() < end); }}"
 SHORT_CALL_TIMEOUT_SECONDS = 1
+REPLY_AFTER_FINISH_SECONDS = 0.05  # long enough for the finished task to reach carry_out first
 PAGE_HEADING = "### Page"  # how every snapshot starts
 SHOWN_FIELD = re.compile(r'textbox "([^"]+)"[^\n]*\]: (.*)')  # a text field the snapshot prints a value for
 SECRETS = {"Password": 'ma"ple\\Syrup: 42', "Card": "4242424242424242", "Code": "737", "Passphrase": "open sesame"}
@@ -816,7 +817,8 @@ def test_a_fatal_error_is_spoken_once_and_its_reason_is_printed_on_exit(
 def test_an_api_error_during_a_command_is_spoken_and_its_reason_is_printed(capsys: pytest.CaptureFixture) -> None:
     refused = httpx2.Response(404, request=httpx2.Request("POST", "https://api.anthropic.com/v1/messages"))
     error = anthropic.NotFoundError(MODEL_NOT_FOUND, response=refused, body=None)
-    line = asyncio.run(main.carry_out(BrokenAgent(error, starts=True), ScriptedEars([]), ScriptedSide(), "go on", NAMES))
+    line, late = asyncio.run(main.carry_out(BrokenAgent(error, starts=True), ScriptedEars([]), ScriptedSide(), "go on", NAMES))
+    assert late is None
     printed = capsys.readouterr().err
     assert line == main.SPOKEN_ERRORS[anthropic.APIStatusError], f"the user heard {line!r}"
     assert MODEL_NOT_FOUND in printed, f"the spoken line names no cause and the terminal shows only {printed!r}"
@@ -838,6 +840,9 @@ class SlowAgent:
     def tell(self, words: str) -> None:
         self.told.append(words)
 
+    def untold(self) -> list[str]:
+        return []
+
     async def view(self) -> list[dict]:
         return []
 
@@ -854,7 +859,7 @@ def carry_out_while(heard: list[str], reply: side.Reply | None = None, interrupt
         await asyncio.wait({task}, timeout=SHORT_CALL_TIMEOUT_SECONDS)
         task.cancel()
         await asyncio.wait({task})
-        line = None if task.cancelled() else task.result()
+        line = None if task.cancelled() else task.result()[0]
         return SimpleNamespace(line=line, spoken=spoken, agent=agent, side=quick)
 
     return asyncio.run(scenario())
@@ -888,6 +893,71 @@ def test_a_change_of_plan_mid_task_is_handed_to_the_task() -> None:
 def test_a_stop_in_other_words_ends_the_task_with_the_reply() -> None:
     ended = carry_out_while(["Hey Beacon, forget it, I'll do it myself."], side.Reply("Okay, leaving it to you.", side.STOP))
     assert ended.line == "Okay, leaving it to you.", f"the task ended with {ended.line!r}"
+
+
+class FinishingAgent:
+    """Finishes its task once `finish` is set; told words arrive after its last step."""
+
+    def __init__(self) -> None:
+        self.finish, self.told = asyncio.Event(), []
+        self.task, self.steps = "", []
+
+    async def run(self, command: str) -> str:
+        await self.finish.wait()
+        return "Done."
+
+    def tell(self, words: str) -> None:
+        self.told.append(words)
+
+    def untold(self) -> list[str]:
+        words, self.told = self.told, []
+        return words
+
+    async def view(self) -> list[dict]:
+        return []
+
+
+class SlowSide:
+    """A quick-reply model that answers only after the task has finished."""
+
+    def __init__(self, agent: FinishingAgent, then: str) -> None:
+        self._agent, self._then = agent, then
+
+    async def reply(self, said: str, task: str, steps: list[str], view: list[dict]) -> side.Reply:
+        self._agent.finish.set()
+        await asyncio.sleep(REPLY_AFTER_FINISH_SECONDS)
+        return side.Reply("Okay.", self._then)
+
+
+@pytest.mark.parametrize("then", [side.CHANGE, side.CONTINUE], ids=["a change", "a question"])
+def test_words_the_task_finished_before_taking_in_become_the_next_command(then: str) -> None:
+    """Seen on a real Mac: "make it fifty times seven" said as the task ended was dropped, and it answered 300."""
+    async def scenario() -> tuple[str, str | None]:
+        agent = FinishingAgent()
+        heard = ["Hey Beacon, actually make it fifty times seven instead."]
+        return await main.carry_out(agent, ScriptedEars([], *heard), SlowSide(agent, then), "fifty times six", NAMES)
+
+    answer, late = asyncio.run(scenario())
+    assert answer == "Done." and late == "actually make it fifty times seven instead", (answer, late)
+
+
+def test_words_told_after_the_last_step_become_the_next_command() -> None:
+    async def scenario() -> tuple[str, str | None]:
+        agent = FinishingAgent()
+
+        async def told_late(*situation: object) -> side.Reply:
+            return side.Reply("Okay.", side.CHANGE)
+
+        quick = SimpleNamespace(reply=told_late)
+        task = asyncio.create_task(main.carry_out(agent, ScriptedEars([], "Hey Beacon, use the other account."), quick,
+                                                  "send it", NAMES))
+        while not agent.told:
+            await asyncio.sleep(0)
+        agent.finish.set()
+        return await task
+
+    answer, late = asyncio.run(scenario())
+    assert late == "use the other account", late
 
 
 def test_a_pushed_utterance_needs_no_name() -> None:

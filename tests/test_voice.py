@@ -236,7 +236,7 @@ def test_stop_watcher_cancels_the_task_only_on_a_stop(heard, stops):
 
         agent = SimpleNamespace(task="", steps=[], view=lambda: asyncio.sleep(0, []), tell=lambda words: None)
         watcher = asyncio.create_task(main.listen_while_working(
-            SimpleNamespace(hear=lines.get, say=say), agent, SimpleNamespace(reply=reply), lambda line: work.cancel(), NAMES))
+            SimpleNamespace(hear=lines.get, say=say), agent, SimpleNamespace(reply=reply), lambda line: work.cancel(), NAMES, []))
         await asyncio.wait({work}, timeout=SCHEDULING_SLACK_SECONDS)
         watcher.cancel()
         return work.cancelled()
@@ -599,6 +599,9 @@ class StubAgent:
 
     def forget(self) -> None:
         pass
+
+    def untold(self) -> list[str]:
+        return []
 
     async def media_playing(self) -> bool:
         return False

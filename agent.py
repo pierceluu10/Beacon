@@ -99,6 +99,11 @@ class Conversation:
         """Hand the running task words the user said mid-task; it reads them before its next step."""
         self._heard.append(words)
 
+    def untold(self) -> list[str]:
+        """Words told after the task's last step, which it never read."""
+        words, self._heard = self._heard, []
+        return words
+
     def _opening(self, command: str, content: list[dict]) -> dict:
         """The user message for a new command, after the memory when the conversation is new."""
         self.task, self.steps = command, []

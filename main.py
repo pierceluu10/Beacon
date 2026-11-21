@@ -130,9 +130,10 @@ async def command_after_name(ears: Ears) -> str | None:
 
 
 async def listen_while_working(ears: Ears, agent: Agent | MacAgent, side: Side, stop: Callable[[str], None],
-                               names: tuple[str, ...]) -> None:
+                               names: tuple[str, ...], in_hand: list[str]) -> None:
     """Hear the user during a task: "stop" stops it at once; anything else said to Beacon gets a quick spoken reply about
-    the task, and changes or stops it when that is what they want."""
+    the task, and changes or stops it when that is what they want. in_hand holds words still being dealt with, which
+    the task may finish before."""
     while True:
         heard = await ears.hear()
         if is_stop(heard, names):  # with or without the name, anywhere: there is no time to say it first
@@ -144,7 +145,9 @@ async def listen_while_working(ears: Ears, agent: Agent | MacAgent, side: Side, 
         if is_stop(said, names):
             stop(STOPPED)
             continue
+        in_hand.append(said)
         reply = await side.reply(said, agent.task, agent.steps, await agent.view())
+        in_hand.remove(said)
         if reply.then == STOP:
             stop(reply.say)
             continue
@@ -153,28 +156,32 @@ async def listen_while_working(ears: Ears, agent: Agent | MacAgent, side: Side, 
         await ears.say(reply.say)
 
 
-async def carry_out(agent: Agent | MacAgent, ears: Ears, side: Side, command: str, names: tuple[str, ...]) -> str:
-    """Run one command to a sentence worth speaking, whatever happens."""
+async def carry_out(agent: Agent | MacAgent, ears: Ears, side: Side, command: str,
+                    names: tuple[str, ...]) -> tuple[str, str | None]:
+    """Run one command to a sentence worth speaking, whatever happens, and what the user said meanwhile that the task
+    ended before taking in: that is the next command."""
     stopped: list[str] = []  # what to say when the user stops the task
+    in_hand: list[str] = []
 
     def stop(line: str) -> None:
         stopped.append(line)
         work.cancel()
 
     work = asyncio.create_task(agent.run(command))
-    watcher = asyncio.create_task(listen_while_working(ears, agent, side, stop, names))
+    watcher = asyncio.create_task(listen_while_working(ears, agent, side, stop, names, in_hand))
     ears.working = True
     try:
-        return await work
+        answer = await work
+        return answer, " ".join([*agent.untold(), *in_hand]) or None
     except asyncio.CancelledError:
         if asyncio.current_task().cancelling():  # Ctrl-C cancels this task, a spoken stop only the work
             raise
-        return stopped[0] if stopped else STOPPED
+        return (stopped[0] if stopped else STOPPED), None
     except MCPError:  # the server is gone for good: main() says so once and quits
         raise
     except tuple(SPOKEN_ERRORS) as error:
         print(repr(error), file=sys.stderr)
-        return spoken_error(error)
+        return spoken_error(error), None
     finally:
         ears.working = False
         ears.hush()  # a line the task queued to speak is out of date once it ends
@@ -200,8 +207,12 @@ async def converse(ears: Ears, agent: Agent | MacAgent, side: Side, memory: Memo
             if clock() - last_command > FORGET_AFTER_SECONDS or memory.stamp() != remembered:
                 agent.forget()  # a new conversation, which reads the memory afresh
                 remembered = memory.stamp()
-            await ears.say(await carry_out(agent, ears, side, command, names))
+            answer, late = await carry_out(agent, ears, side, command, names)
+            await ears.say(answer)
             last_command = clock()
+            if late:  # said as the task was finishing: carried out next, as if said just after
+                command = late
+                continue
             if await agent.media_playing():  # a playing video would be heard as follow-up commands
                 break
             follow_up = await ears.hear(FOLLOW_UP_SECONDS)
