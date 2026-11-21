@@ -170,5 +170,11 @@ class Ears:
     def set_listening(self, listening: bool) -> None:
         """Switch the microphone on or off. Call on the event loop; a line being spoken finishes first."""
         self._listening = listening
-        if not self._voice.locked():  # say() restarts the microphone itself when it is done
+        # The recogniser's own stop keeps the audio device open, and macOS then still shows the microphone as in use.
+        device = self._mic._sd_stream
+        if listening:
+            device.start()
+        if not self._voice.locked():  # say() restarts the recogniser itself when it is done
             (self._mic.start if listening else self._mic.stop)()
+        if not listening:
+            device.stop()

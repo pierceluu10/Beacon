@@ -418,7 +418,9 @@ def test_speech_nobody_was_listening_for_is_not_delivered_later(ears, run, user_
 def test_nothing_is_heard_while_listening_is_switched_off_even_after_a_spoken_line(ears, run, user_says, heard):
     async def scenario() -> str | None:
         ears.set_listening(False)
+        assert not ears._mic._sd_stream.running, "the audio device is still open while muted"
         await ears.say("Ready.")  # speaking must not switch the microphone back on
+        assert not ears._mic._sd_stream.running, "speaking reopened the audio device while muted"
         await asyncio.sleep(user_says("yes") + LINE_END_SECONDS)
         return await ears.hear(SILENCE_SECONDS)
 

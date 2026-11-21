@@ -36,7 +36,7 @@ When you hear "Ready", say "Hey Beacon".
 
 A bird icon appears in the menu bar at the top right while it runs. Click it for:
 
-- **Mute**: stops the microphone; nothing is heard or transcribed, and a running task cannot be stopped by voice.
+- **Mute**: stops listening and releases the microphone, so the orange indicator in the menu bar goes off; a running task cannot be stopped by voice.
 - **Turn Off / Turn On**: closes the browser and the microphone but keeps the icon, so you can start it again.
 - **Works in**: **My whole Mac**, **My Chrome** (needs `extension_token`) or **Separate Chrome window** (its own
   profile). Switching restarts Beacon; the choice is not saved, and it starts in the `mode` from your config.
