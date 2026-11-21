@@ -20,6 +20,7 @@ SAMPLE_RATE = 16_000
 MICROPHONE_CHECK_FRAMES = SAMPLE_RATE // 2
 MICROPHONE_CHECK_ATTEMPTS = 30  # 15 s: time to answer the macOS permission prompt on the first run
 WAKE_WINDOW_WORDS = 3
+SENTENCE_START = re.compile(r"^|[.?!]\s+")  # "5.07" has no space after its point, so it does not split a sentence
 WAKE_SIMILARITY = 0.75
 YES = ("yes", "yeah", "yep", "yup", "sure", "confirm", "correct", "go ahead", "do it", "submit")
 YES_FILLERS = ("uh", "um", "okay", "ok", "please", "and")
@@ -59,12 +60,15 @@ def _mentions(transcript: str, phrases: tuple[str, ...]) -> bool:
 
 
 def wake_command(transcript: str, names: tuple[str, ...]) -> str | None:
-    """The words after the agent's name if the utterance opens with it ("" if nothing follows), else None."""
-    for index, word in enumerate(re.finditer(r"[\w']+", transcript)):
-        if index == WAKE_WINDOW_WORDS:
-            break
-        if _is_name(word[0], names):
-            return transcript[word.end():].strip(" ,.!?")
+    """The words after the agent's name if a sentence opens with it ("" if nothing follows), else None. Every sentence
+    is checked, not just the first: the recogniser runs other speech in the room into the same utterance."""
+    for start in SENTENCE_START.finditer(transcript):
+        sentence = transcript[start.end():]
+        for index, word in enumerate(re.finditer(r"[\w']+", sentence)):
+            if index == WAKE_WINDOW_WORDS:
+                break
+            if _is_name(word[0], names):
+                return sentence[word.end():].strip(" ,.!?")
     return None
 
 
