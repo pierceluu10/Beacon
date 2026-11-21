@@ -430,6 +430,14 @@ def test_nothing_is_heard_while_listening_is_switched_off_even_after_a_spoken_li
     assert voice.parse_yes_no(heard("yes")), "nothing heard after listening was switched back on"
 
 
+def test_the_recogniser_is_restarted_so_it_does_not_keep_every_line_it_ever_heard(ears, heard):
+    lines_kept = []
+    for _ in range(voice.RESTART_AFTER_LINES + 2):
+        heard("yes")
+        lines_kept.append(len(ears._mic.mic_stream.update_transcription().lines))
+    assert max(lines_kept) <= voice.RESTART_AFTER_LINES, f"lines kept after each utterance: {lines_kept}"
+
+
 def test_newest_listener_gets_the_utterance_and_the_older_one_the_next(ears, run, user_says):
     async def scenario() -> None:
         watcher = asyncio.create_task(ears.hear())
