@@ -38,8 +38,8 @@ A bird icon appears in the menu bar at the top right while it runs. Click it for
 
 - **Mute**: stops the microphone; nothing is heard or transcribed, and a running task cannot be stopped by voice.
 - **Turn Off / Turn On**: closes the browser and the microphone but keeps the icon, so you can start it again.
-- **Browser**: **Separate window** (its own Chrome profile) or **My Chrome** (needs `extension_token`, see below).
-  Switching restarts Beacon; the choice is not saved, and it starts in My Chrome whenever a token is set.
+- **Works in**: **My whole Mac**, **My Chrome** (needs `extension_token`) or **Separate Chrome window** (its own
+  profile). Switching restarts Beacon; the choice is not saved, and it starts in the `mode` from your config.
 - **Quit Beacon**: closes everything and exits, as does Ctrl-C.
 
 The small text beside the bird says `…` while starting, `muted` or `off`.
@@ -93,6 +93,20 @@ Chrome is only read, never controlled.
   `blocked_hosts` only the site's name is sent; for a local file, a `chrome://` page or another address it may
   not open, only the reason.
 
+## Work on your whole Mac
+
+Set `mode = "mac"` in `~/.beacon/config.toml`, or pick **Works in > My whole Mac** from the bird menu. Beacon then
+sees your screen through screenshots and uses the real mouse and keyboard, in any app, with whatever you are
+logged in to. "This" means what is in front of you.
+
+- macOS asks twice for your terminal app: **Screen Recording** and **Accessibility** (System Settings, Privacy and
+  Security). Allow both, quit and reopen the terminal, and start Beacon again.
+- There is no spoken confirmation in this mode. It does what you ask, including sending, buying and deleting.
+  Say "stop" to cancel a running task; it cannot hear you while it is speaking.
+- It works on the main display only, and it moves your real pointer, so keep your hands off while it works.
+- Every step sends a screenshot of your screen to the Anthropic API, including anything visible on it.
+- It is slower and costs more per step than the browser modes, because it reads pictures instead of page text.
+
 ## Work in your own Chrome (opt-in)
 
 By default Beacon drives its own Chrome window with its own logins. To have it work in a tab of the Chrome you
@@ -101,7 +115,7 @@ already use, with your logins:
 1. Install the Playwright Extension from the Chrome Web Store:
    `https://chromewebstore.google.com/detail/playwright-extension/mmlmfjhmonkocbjadbfplnigmagldckm`
 2. Click its toolbar icon and copy the value after `PLAYWRIGHT_MCP_EXTENSION_TOKEN=`.
-3. Put `extension_token = "..."` in `~/.beacon/config.toml`, then `chmod 600 ~/.beacon/config.toml`.
+3. Put `extension_token = "..."` and `mode = "chrome"` in `~/.beacon/config.toml`, then `chmod 600 ~/.beacon/config.toml`.
 
 Beacon then opens one tab in your Chrome (in a "Playwright" tab group) and works there. Know what you are
 trading:
@@ -132,6 +146,7 @@ Optional, in `~/.beacon/config.toml`. Unknown keys are an error.
 | `blocked_hosts` | `[]` | Sites it may never navigate to, for example your bank. Links and redirects that land there are not checked. |
 | `stt_model` | `"MEDIUM_STREAMING"` | Or `"SMALL_STREAMING"` (less memory, slightly less accurate). |
 | `say_voice` | `"Samantha"` | Any voice from `say -v '?'`. |
+| `mode` | `"window"` | What it works in: `"window"` (its own Chrome window), `"chrome"` (your Chrome, needs `extension_token`) or `"mac"` (your whole Mac). |
 | `extension_token` | `""` | Set it to work in your own Chrome through the Playwright Extension (see above). |
 
 ## How it works
@@ -146,6 +161,7 @@ Optional, in `~/.beacon/config.toml`. Unknown keys are an error.
 | `everyday.py` | Reads the address and title of the front tab of your everyday Chrome when that Chrome is the app in front. |
 | `front_tab.js` | The macOS script `everyday.py` runs. It addresses the Chrome in front by process id, because every Chrome answers to the same name. |
 | `menubar.py`, `menubar.swift`, `bird.png` | The menu bar icon and its menu. macOS 26 does not show a menu bar item made by Python, so a small native helper shows it; it is compiled on first run and needs the Xcode command line tools (`xcode-select --install`). |
+| `mac.py`, `mac_prompt.txt` | The whole-Mac mode: screenshots, mouse and keyboard through Anthropic's computer toolset. |
 | `prompt.txt` | The system prompt. |
 
 ## Tests

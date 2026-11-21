@@ -12,6 +12,7 @@ import sounddevice
 from mcp import MCPError
 
 from agent import Agent, BrowserClosedError, BrowserStartError
+from mac import MacAgent, MacPermissionError
 from voice import Ears, MicrophoneSilentError, is_dismissal, is_stop, parse_yes_no, speak, wake_command
 
 HOME = Path("~/.beacon").expanduser()
@@ -39,10 +40,13 @@ SPOKEN_ERRORS: dict[type[Exception], str] = {  # most specific first
     BrowserClosedError: "The browser window was closed, so I stopped.",
     BrowserStartError: "I couldn't open Chrome. The reason is in the terminal.",
     MCPError: "The browser stopped responding, so I stopped.",
+    MacPermissionError: "I need permission to see and control the screen. The steps are in the terminal.",
     MicrophoneSilentError: NO_MICROPHONE,
     sounddevice.PortAudioError: NO_MICROPHONE,
 }
 SYSTEM_PROMPT = Path(__file__).with_name("prompt.txt").read_text()
+MAC_PROMPT = Path(__file__).with_name("mac_prompt.txt").read_text()
+WINDOW, CHROME, MAC = "window", "chrome", "mac"  # what it works in: its own Chrome window, your Chrome, or the whole Mac
 
 
 class ConfigError(ValueError):
@@ -61,7 +65,8 @@ class Config:
     blocked_hosts: list[str] = field(default_factory=list)
     stt_model: str = "MEDIUM_STREAMING"
     say_voice: str = "Samantha"
-    extension_token: str = ""  # set: work in a tab of your own Chrome through the Playwright Extension
+    mode: str = WINDOW  # WINDOW, CHROME (needs extension_token) or MAC
+    extension_token: str = ""  # for CHROME: the Playwright Extension's token
 
     @property
     def names(self) -> tuple[str, ...]:
@@ -163,7 +168,7 @@ async def converse(ears: Ears, agent: Agent, config: Config) -> None:
                 command = ""  # the name alone in the follow-up window is a wake, not a command
 
 
-def build_agent(config: Config, ears: Ears, headless: bool = False) -> Agent:
+def build_agent(config: Config, ears: Ears, headless: bool = False) -> Agent | MacAgent:
     profile_dir, resume_path, facts_path = (Path(value).expanduser().resolve() for value in
                                             (config.profile_dir, config.resume_path, config.facts_path))
     upload_dir = resume_path.parent
@@ -171,21 +176,23 @@ def build_agent(config: Config, ears: Ears, headless: bool = False) -> Agent:
         raise ConfigError(f"profile_dir must not be inside {upload_dir}: every file in the resume's folder can be uploaded.")
     profile_dir.mkdir(parents=True, exist_ok=True)
     upload_dir.mkdir(parents=True, exist_ok=True)
-    prompt = SYSTEM_PROMPT.format(
+    prompt = (MAC_PROMPT if config.mode == MAC else SYSTEM_PROMPT).format(
         agent_name=config.agent_name, user_name=config.user_name, upload_dir=upload_dir, resume_name=resume_path.name,
         uploads=", ".join(sorted(file.name for file in upload_dir.iterdir() if file.is_file())) or NO_FACTS,
         facts=facts_path.read_text() if facts_path.exists() else NO_FACTS)
+    if config.mode == MAC:
+        return MacAgent(config.model, prompt, partial(ask, ears, names=config.names))
     return Agent(config.model, profile_dir, upload_dir, prompt, frozenset(config.blocked_hosts),
                  partial(confirm, ears, names=config.names), partial(ask, ears, names=config.names), headless,
-                 config.extension_token)
+                 config.extension_token if config.mode == CHROME else "")
 
 
-async def main(started: Callable[[Ears], None] = lambda ears: None, in_my_chrome: bool = True) -> None:
-    """Run until cancelled. started receives the Ears once the microphone is live; in_my_chrome False ignores the
-    extension token and uses the separate window (both are the menu bar's switches)."""
+async def main(started: Callable[[Ears], None] = lambda ears: None, mode: str | None = None) -> None:
+    """Run until cancelled. started receives the Ears once the microphone is live; mode overrides the configured one
+    (both are the menu bar's switches)."""
     config = load_config()
-    if not in_my_chrome:
-        config = replace(config, extension_token="")
+    if mode:
+        config = replace(config, mode=mode)
     try:
         async with Ears(config.stt_model, [config.agent_name], config.say_voice) as ears, build_agent(config, ears) as agent:
             started(ears)

@@ -1,5 +1,5 @@
 // The menu bar bird. macOS 26 does not show a menu bar item that Python creates, so this helper shows it and
-// passes clicks on. stdin, one line per change: "<state>\t<in my Chrome: 0|1>\t<has a token: 0|1>".
+// passes clicks on. stdin, one line per change: "<state>\t<mode: window|chrome|mac>\t<has a token: 0|1>".
 // stdout: the action of the clicked item. It quits when stdin closes.
 import AppKit
 
@@ -10,8 +10,9 @@ final class Menu: NSObject {
     let state = NSMenuItem(title: "Starting…", action: nil, keyEquivalent: "")
     lazy var mute = entry("Mute", "mute")
     lazy var power = entry("Turn Off", "power")
-    lazy var ownWindow = entry("Separate window", "own_window")
-    lazy var myChrome = entry("My Chrome", "my_chrome")
+    lazy var wholeMac = entry("My whole Mac", "mac")
+    lazy var myChrome = entry("My Chrome", "chrome")
+    lazy var ownWindow = entry("Separate Chrome window", "window")
 
     init(icon: String) {
         super.init()
@@ -23,10 +24,10 @@ final class Menu: NSObject {
         let menu = NSMenu()
         menu.autoenablesItems = false
         state.isEnabled = false
-        let browser = NSMenuItem(title: "Browser", action: nil, keyEquivalent: "")
+        let browser = NSMenuItem(title: "Works in", action: nil, keyEquivalent: "")
         browser.submenu = NSMenu()
         browser.submenu?.autoenablesItems = false
-        [ownWindow, myChrome].forEach { browser.submenu?.addItem($0) }
+        [wholeMac, myChrome, ownWindow].forEach { browser.submenu?.addItem($0) }
         [state, .separator(), mute, power, browser, .separator(), entry("Quit Beacon", "quit")].forEach { menu.addItem($0) }
         bird.menu = menu
     }
@@ -51,8 +52,9 @@ final class Menu: NSObject {
         mute.state = fields[0] == "Muted" ? .on : .off
         mute.isEnabled = fields[0] == "Listening" || fields[0] == "Muted"
         power.title = fields[0] == "Off" ? "Turn On" : "Turn Off"
-        myChrome.state = fields[1] == "1" ? .on : .off
-        ownWindow.state = fields[1] == "1" ? .off : .on
+        for item in [wholeMac, myChrome, ownWindow] {
+            item.state = item.representedObject as? String == fields[1] ? .on : .off
+        }
         myChrome.isEnabled = fields[2] == "1"
         myChrome.title = fields[2] == "1" ? "My Chrome" : "My Chrome (set extension_token first)"
     }

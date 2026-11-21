@@ -21,6 +21,7 @@ from anthropic.types import Message
 from mcp import MCPError
 
 import agent
+import mac
 import everyday
 import main
 from agent import (CACHED, CUT_OFF, DECLINED, EVALUATE_RESULT, EVALUATE_TOOL, EVERYDAY_TITLE_CHARACTERS, HIDDEN,
@@ -795,3 +796,46 @@ def test_the_extension_token_decides_which_browser_the_server_drives(tmp_path: P
         assert "--extension" not in arguments, arguments
         assert arguments[arguments.index("--user-data-dir") + 1] == str(tmp_path / "profile"), arguments
         assert environment is None
+
+
+class ScriptedMac:
+    """Stands in for the real screen and input: records actions, fails on the key named "bogus"."""
+
+    def __init__(self) -> None:
+        self.actions: list[str] = []
+
+    async def act(self, name: str, arguments: dict) -> list[dict]:
+        if arguments.get("text") == "bogus":
+            raise mac.MacActionError("Unknown key 'bogus'.")
+        self.actions.append(name)
+        return [{"type": "text", "text": mac.OK}]
+
+
+def test_whole_mac_results_echo_the_toolset_and_stop_the_batch_at_the_first_failure() -> None:
+    async def answer(question: str) -> str:
+        return "the second one"
+
+    driver = mac.MacAgent("claude-opus-5-5", "prompt", answer)
+    driver._mac = ScriptedMac()
+    calls = [SimpleNamespace(id=str(number), name=name, input=arguments) for number, (name, arguments) in enumerate([
+        ("left_click", {"coordinate": [10, 20]}), ("key", {"text": "bogus"}), ("type", {"text": "never typed"}),
+        ("ask_user", {"question": "Which one?"})])]
+    results = asyncio.run(driver._results(calls))
+    assert driver._mac.actions == ["left_click"], f"actions after the failure still ran: {driver._mac.actions}"
+    assert [result.get("toolset_name") for result in results] == [mac.TOOLSET] * 3 + [None], results
+    assert [result.get("is_error", False) for result in results] == [False, True, True, False], results
+    assert results[2]["content"] == f"Error: {mac.NOT_EXECUTED}", results[2]
+    assert results[3]["content"] == "The user said: the second one", results[3]
+
+
+@pytest.mark.parametrize(("modifiers", "expected"), [
+    ("", 0), ("shift", mac.Quartz.kCGEventFlagMaskShift),
+    ("cmd+shift", mac.Quartz.kCGEventFlagMaskCommand | mac.Quartz.kCGEventFlagMaskShift),
+    ("super", mac.Quartz.kCGEventFlagMaskCommand), ("Ctrl+Alt", mac.Quartz.kCGEventFlagMaskControl | mac.Quartz.kCGEventFlagMaskAlternate)])
+def test_whole_mac_modifier_names_become_key_flags(modifiers: str, expected: int) -> None:
+    assert mac._flags(modifiers) == expected
+
+
+def test_whole_mac_refuses_a_modifier_it_does_not_know() -> None:
+    with pytest.raises(mac.MacActionError, match="hyper"):
+        mac._flags("hyper+shift")
