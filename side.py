@@ -8,8 +8,9 @@ GREETING_TOKENS = 60
 REPLY_TOKENS = 300
 CONTINUE, CHANGE, STOP = "continue", "change", "stop"
 GREETING_PROMPT = ("You are {agent_name}, a voice assistant that uses the user's computer for them. You have just started up. "
-                   "Say one short, warm line, under 10 words: greet the user, by name if their notes give it, and ask what "
-                   "they want to do. Plain text, nothing else.")
+                   "Say one short, warm line of at most 8 words, like \"Hey Sam, what are we doing today?\": greet the user, "
+                   "by name only if their notes give it, and ask what they want to do. Do not introduce yourself. Plain "
+                   "text, nothing else.")
 NO_NOTES = "The user has not written any notes."
 NOTES = "The user's notes:\n{notes}"
 REPLY_PROMPT = (

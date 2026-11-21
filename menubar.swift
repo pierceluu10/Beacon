@@ -22,8 +22,9 @@ struct Status: Decodable, Equatable {
     var name: String
 }
 
-let birdPoints: CGFloat = 22
-let glyphPoints: CGFloat = 11
+let barPoints: CGFloat = 22  // the menu bar's usable height
+let birdPoints: CGFloat = 17  // the bird's height; bird.png is cropped to the bird, so this is all bird
+let glyphPoints: CGFloat = 13
 let glyphGap: CGFloat = 3
 let dimmed: CGFloat = 0.35
 let pulseSeconds = 0.5
@@ -52,13 +53,14 @@ func send(_ message: [String: Any]) {
 func indicator(bird: NSImage?, state: String, faded: Bool) -> NSImage {
     let glyph = glyphs[state].flatMap { NSImage(systemSymbolName: $0, accessibilityDescription: headlines[state]) }?
         .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: glyphPoints, weight: .semibold))
-    let width = birdPoints + (glyph.map { glyphGap + $0.size.width } ?? 0)
-    let image = NSImage(size: NSSize(width: width, height: birdPoints), flipped: false) { _ in
+    let birdWidth = bird.map { birdPoints * $0.size.width / $0.size.height } ?? birdPoints
+    let width = birdWidth + (glyph.map { glyphGap + $0.size.width } ?? 0)
+    let image = NSImage(size: NSSize(width: width, height: barPoints), flipped: false) { _ in
         let birdFraction = state == "off" || state == "starting" ? dimmed : 1
-        bird?.draw(in: NSRect(x: 0, y: 0, width: birdPoints, height: birdPoints), from: .zero, operation: .sourceOver,
-                   fraction: birdFraction)
+        bird?.draw(in: NSRect(x: 0, y: (barPoints - birdPoints) / 2, width: birdWidth, height: birdPoints), from: .zero,
+                   operation: .sourceOver, fraction: birdFraction)
         if let glyph {
-            let frame = NSRect(x: birdPoints + glyphGap, y: (birdPoints - glyph.size.height) / 2,
+            let frame = NSRect(x: birdWidth + glyphGap, y: (barPoints - glyph.size.height) / 2,
                                width: glyph.size.width, height: glyph.size.height)
             glyph.draw(in: frame, from: .zero, operation: .sourceOver, fraction: faded ? dimmed : 1)
         }

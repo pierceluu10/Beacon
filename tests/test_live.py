@@ -20,7 +20,7 @@ import memory
 from agent import EVALUATE_RESULT, EVALUATE_TOOL, INTERRUPTED, OUT_OF_STEPS, REFUSED, Agent
 from conftest import CLIPS, FACTS, scratch_home
 from main import STOPPED, WINDOW, Config, build_agent, converse
-from side import Side
+from side import CHANGE, CONTINUE, STOP, Side
 from test_voice import SilentMouth
 from voice import Ears
 
@@ -58,6 +58,13 @@ EVERYDAY_WORDS = ("example", "documentation")  # what that page is about
 DOLLARS_PER_MILLION_TOKENS = {  # claude-opus-5-5, the model Config defaults to
     "input_tokens": 4.0, "cache_read_input_tokens": 0.2, "cache_creation_input_tokens": 5.0, "output_tokens": 20.0}
 TOKENS_PER_MILLION = 1_000_000
+QUICK_SECONDS = 4  # a reply mid-task has to come back while the user still expects one
+GREETING_WORDS = 10
+NOTES_WITH_NAME = "My name is Sam. Keep replies short."
+TASK = "find a quiet cafe near me that is open late and add it to my calendar for Friday"
+STEPS = ["Opened Maps and searched for quiet cafes open late.", "Opened the result for Ember Coffee, open until 11 pm."]
+VIEW = [{"type": "text", "text": "The screen right now: Apple Maps, a list of three cafes. Ember Coffee is selected: "
+         "open until 11 pm, 0.4 miles away, 4.6 stars. Beside it: Lantern Tea House, closes at 9 pm."}]
 
 
 @pytest.fixture(scope="module")
@@ -109,9 +116,12 @@ def config_in(home: Path) -> Config:
 
 def memory_in(home: Path) -> memory.Memory:
     """conftest's facts as the notes and its uploads folder as the files. The stand-in resume is not a PDF the API can
-    read, so only the notes are sent; the resume can still be attached."""
+    read, so it is named the way Memory names a file it cannot send, and can still be attached."""
     remembered = memory.Memory(home / "facts.md", home / "uploads")
-    remembered.blocks = lambda: [{"type": "text", "text": memory.NOTES.format(notes=remembered.notes())}]
+    remembered.blocks = lambda: [
+        {"type": "text", "text": memory.HEADER}, {"type": "text", "text": memory.NOTES.format(notes=remembered.notes())},
+        *({"type": "text", "text": memory.UNREADABLE.format(name=path.name, folder=remembered.folder)}
+          for path in remembered.files())]
     return remembered
 
 
@@ -403,3 +413,39 @@ class TestYouTube:
         print(f"{command!r}: opened {addresses}\n  answer: {answer!r}\n  page: {arrived}")
         assert opened == opens_it and arrives in arrived, f"it opened {addresses} and is on {arrived}; it answered {answer!r}"
         assert not opens_it or any(word in answer.lower() for word in EVERYDAY_WORDS), f"asked about the page, it said {answer!r}"
+
+
+@pytest.fixture(scope="module")
+def side(runner: asyncio.Runner) -> Iterator[Side]:
+    with held_open(runner, Side(Config().quick_model, Config().agent_name)) as side:
+        yield side
+
+
+class TestSide:
+    """The fast model behind the greeting and the replies mid-task, on the real API."""
+
+    @pytest.mark.parametrize(("notes", "name"), [(NOTES_WITH_NAME, "Sam"), ("I'm Priya, a nurse in Leeds.", "Priya"), ("", None)],
+                             ids=["the name from the notes", "not the prompt's example name", "no notes, no invented name"])
+    def test_the_greeting_is_short_and_uses_the_name_only_from_memory(self, runner: asyncio.Runner, side: Side,
+                                                                       notes: str, name: str | None):
+        greeting = runner.run(side.greet(notes))
+        print(f"greeting: {greeting!r}")
+        assert greeting and len(greeting.split()) <= GREETING_WORDS, greeting
+        assert (name in greeting) if name else not re.search(r"\b(Sam|Pierce|user)\b", greeting), greeting
+        assert name == "Sam" or "Sam" not in greeting, f"the prompt's example name leaked: {greeting!r}"
+        assert "on it" not in greeting.lower()
+
+    @pytest.mark.parametrize(("said", "then", "mentions"), [
+        ("what are you seeing right now?", CONTINUE, ("ember", "11", "eleven")),
+        ("actually make it Saturday instead", CHANGE, ("saturday",)),
+        ("never mind, cancel that", STOP, ()),
+    ], ids=["a question is answered from the screen", "a redirect changes the task", "cancel stops it"])
+    def test_words_mid_task_get_a_quick_fitting_reply(self, runner: asyncio.Runner, side: Side, said: str, then: str,
+                                                      mentions: tuple[str, ...]):
+        started = time.monotonic()
+        reply = runner.run(side.reply(said, TASK, STEPS, VIEW))
+        seconds = time.monotonic() - started
+        print(f"{said!r} -> {reply} in {seconds:.1f} s")
+        assert reply.then == then, reply
+        assert not mentions or any(word in reply.say.lower() for word in mentions), reply.say
+        assert seconds < QUICK_SECONDS, f"took {seconds:.1f} s"
