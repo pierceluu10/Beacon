@@ -13,6 +13,7 @@ from mcp.client.stdio import stdio_client
 
 import everyday
 from gate import ALLOW, UNREADABLE, Verdict, judge, judge_dialog, to_inspect, url_refusal
+from memory import Memory
 
 PLAYWRIGHT_MCP = "@playwright/mcp@0.0.86"
 EXTENSION_TOKEN_VARIABLE = "PLAYWRIGHT_MCP_EXTENSION_TOKEN"  # with it the Playwright Extension connects without a dialog
@@ -66,9 +67,13 @@ CUT_OFF = "That step needed more writing than I can do at once, so I stopped."
 UNCHECKABLE = "Refused: this call could not be checked ({error}). Correct its arguments or try another way."
 REFUSED = "I can't help with that one."
 NOTHING_TO_SAY = "Done."
+USER_SAID = "The user said this while you were working: {words}"
+STEP_CHARACTERS = 160
+SAID_STEP = "You said: {text}"
 
 Confirm = Callable[[str], Awaitable[bool]]
 Ask = Callable[[str], Awaitable[str | None]]
+Narrate = Callable[[str], None]
 
 
 class BrowserStartError(Exception):
@@ -79,12 +84,63 @@ class BrowserClosedError(Exception):
     """The page turned blank in the middle of a task: the user closed the window."""
 
 
-class Agent:
+class Conversation:
+    """What both agents share: the memory at the start of a conversation, the first line of each task spoken at once,
+    the user's words that arrive mid-task, and the task's steps for a quick spoken reply about it."""
+
+    def __init__(self, memory: Memory, narrate: Narrate) -> None:
+        self._memory, self._narrate = memory, narrate
+        self._messages: list[dict] = []
+        self._heard: list[str] = []
+        self.task = ""
+        self.steps: list[str] = []
+
+    def tell(self, words: str) -> None:
+        """Hand the running task words the user said mid-task; it reads them before its next step."""
+        self._heard.append(words)
+
+    def _opening(self, command: str, content: list[dict]) -> dict:
+        """The user message for a new command, after the memory when the conversation is new."""
+        self.task, self.steps = command, []
+        self._heard.clear()
+        return {"role": "user", "content": (self._memory.blocks() if not self._messages else []) + content}
+
+    def _took(self, kept: list) -> None:
+        """Record a step; the text that comes with a task's first actions is spoken right away."""
+        for block in kept:
+            if block.type == "text" and block.text.strip():
+                if not self.steps:
+                    self._narrate(block.text.strip())
+                self.steps.append(SAID_STEP.format(text=block.text.strip()))
+            elif block.type == "tool_use":
+                self.steps.append(f"{block.name} {json.dumps(block.input)[:STEP_CHARACTERS]}")
+
+    def _heard_blocks(self) -> list[dict]:
+        blocks = [{"type": "text", "text": USER_SAID.format(words=words)} for words in self._heard]
+        self._heard.clear()
+        return blocks
+
+    def _finished(self, reply) -> str | None:
+        """The answer to speak when the model stopped calling tools, or None when the user spoke meanwhile and the task
+        goes on with their words."""
+        said = " ".join(block.text for block in reply.content if block.type == "text").strip()
+        answer = (REFUSED if reply.stop_reason == "refusal" else CUT_OFF if reply.stop_reason == "max_tokens"
+                  else said or NOTHING_TO_SAY)
+        self._messages.append({"role": "assistant", "content": answer})
+        if self._heard:
+            self._messages.append({"role": "user", "content": self._heard_blocks()})
+            return None
+        return answer
+
+
+class Agent(Conversation):
     """One browser, one conversation. Use as an async context manager."""
 
-    def __init__(self, model: str, profile_dir: Path, upload_dir: Path, system_prompt: str, blocked_hosts: frozenset[str],
-                 confirm: Confirm, ask: Ask, headless: bool = False, extension_token: str = "") -> None:
+    def __init__(self, model: str, profile_dir: Path, memory: Memory, system_prompt: str, blocked_hosts: frozenset[str],
+                 confirm: Confirm, ask: Ask, narrate: Narrate, headless: bool = False, extension_token: str = "") -> None:
+        super().__init__(memory, narrate)
         self._model, self._blocked_hosts, self._confirm, self._ask = model, blocked_hosts, confirm, ask
+        upload_dir = memory.folder
         self._profile_dir = profile_dir
         self._in_own_chrome = bool(extension_token)  # a tab in the user's own Chrome instead of a window with its own profile
         own_window = ["--browser", "chrome", "--user-data-dir", str(profile_dir), *(["--headless"] if headless else [])]
@@ -97,7 +153,6 @@ class Agent:
                   "--timeout-navigation", NAVIGATION_TIMEOUT_MILLISECONDS, "--timeout-settle", SETTLE_MILLISECONDS])
         self._anthropic = AsyncAnthropic(timeout=Timeout(REQUEST_TIMEOUT_SECONDS, connect=DEFAULT_TIMEOUT.connect))
         self._stack = AsyncExitStack()
-        self._messages: list[dict] = []
         self._pages: list[dict] = []
         self._on_page = False
 
@@ -134,6 +189,10 @@ class Agent:
     async def media_playing(self) -> bool:
         return MEDIA_PLAYING_RESULT in await self._call(EVALUATE_TOOL, {"function": MEDIA_PLAYING_JS})
 
+    async def view(self) -> list[dict]:
+        """What the task sees now: the newest page snapshot."""
+        return [{"type": "text", "text": self._pages[-1]["text"]}] if self._pages else []
+
     async def run(self, command: str) -> str:
         """Carry out one spoken command and return the sentence to speak back. Cancel the task to interrupt it."""
         self._on_page = False
@@ -145,23 +204,22 @@ class Agent:
                 await self._show_tab()
             snapshot, in_front = await asyncio.gather(self._page(), self._everyday_page())
             asked = f"{command}\n\n{in_front}{NOW.format(now=datetime.now())}\n\n{PAGE_NOW}"
-            self._messages.append({"role": "user", "content": [{"type": "text", "text": asked}, self._page_block(snapshot)]})
+            self._messages.append(self._opening(command, [{"type": "text", "text": asked}, self._page_block(snapshot)]))
             for _ in range(MAX_STEPS):
                 reply = await self._anthropic.messages.create(model=self._model, max_tokens=MAX_TOKENS, system=self._system,
                                                               tools=self._tools, messages=self._messages, cache_control=CACHED)
                 if reply.stop_reason != "tool_use":
-                    said = " ".join(block.text for block in reply.content if block.type == "text").strip()
-                    answer = (REFUSED if reply.stop_reason == "refusal" else CUT_OFF if reply.stop_reason == "max_tokens"
-                              else said or NOTHING_TO_SAY)
-                    self._messages.append({"role": "assistant", "content": answer})
-                    return answer
+                    if (answer := self._finished(reply)) is not None:
+                        return answer
+                    continue
                 kept = [block for block in reply.content if block.type in KEPT_BLOCK_TYPES]
+                self._took(kept)
                 results = [{"type": "tool_result", "tool_use_id": call.id, "content": await self._use(call.name, call.input)}
                            for call in kept if call.type == "tool_use"]
                 # Appended together and before the wait, so a stop from here on finds a valid history of what was done.
                 self._messages += [{"role": "assistant", "content": kept}, {"role": "user", "content": results}]
                 await asyncio.sleep(PAGE_SETTLE_SECONDS)
-                results.append(self._page_block(await self._page()))
+                results += [self._page_block(await self._page()), *self._heard_blocks()]
         except BaseException:
             self._messages.append({"role": "user", "content": INTERRUPTED})
             raise

@@ -1,10 +1,11 @@
 [project]
 name = "beacon"
 version = "0.1.0"
-description = "Say the agent's name, speak a command, watch Chrome do it."
+description = "A voice assistant that uses your computer: say its name or hold a key, speak, and watch it work."
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "anthropic==2.11.0",
+    "httpx2==2.16.2",
     "mcp==2.3.0",
     "moonshine-voice==0.1.6",
     "pyobjc-framework-applicationservices>=13.0",
