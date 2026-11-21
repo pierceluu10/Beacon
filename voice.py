@@ -14,6 +14,7 @@ SAY_TIMEOUT_SECONDS = 20  # `say` hung once in testing here; prompt.txt holds an
 ECHO_TAIL_SECONDS = 0.3
 QUIET_WAIT_SECONDS = 3  # how long a spoken line waits for the user to finish a sentence
 MAX_UTTERANCE_SECONDS = 15
+RESTART_AFTER_LINES = 8  # the recogniser keeps every line's audio and re-reads all of it on each update
 SAMPLE_RATE = 16_000
 MICROPHONE_CHECK_FRAMES = SAMPLE_RATE // 2
 MICROPHONE_CHECK_ATTEMPTS = 30  # 15 s: time to answer the macOS permission prompt on the first run
@@ -102,6 +103,7 @@ class Ears:
         self._quiet.set()
         self._voice = asyncio.Lock()  # one spoken line at a time
         self._listening = True  # the menu bar switch; off means the microphone stays stopped
+        self._lines_kept = 0
         self._mic = MicTranscriber().model_arch(ModelArch[stt_model])
         self._mic.add_listener(self._on_event)
 
@@ -124,6 +126,12 @@ class Ears:
 
     def _deliver(self, text: str) -> None:
         self._quiet.set()
+        self._lines_kept += 1
+        if self._lines_kept >= RESTART_AFTER_LINES and self._listening and not self._voice.locked():
+            # Hours of background sound would otherwise grow memory and processor use without limit.
+            self._lines_kept = 0
+            self._mic.stop()
+            self._mic.start()
         # The newest listener wins, so a question asked mid-task outranks the stop watcher.
         for waiter in reversed(self._waiters):
             if text and not waiter.done():
@@ -150,6 +158,7 @@ class Ears:
             # Stopping flushes the phrase in progress to whoever is listening now, so it cannot be stitched onto the
             # answer to this line. Measured 4-100 ms, so it runs on the loop: a cancelled thread could not be undone.
             self._mic.stop()
+            self._lines_kept = 0
             try:
                 await speak(text, self._say_voice)
                 await asyncio.sleep(ECHO_TAIL_SECONDS)
