@@ -1,5 +1,5 @@
-"""Memory, the menu's saved settings, the quick side replies, the ElevenLabs voice and its fallback, and how a running task
-takes the user's words and speaks its first line. No microphone, no API request, no sound."""
+"""Memory, the menu's saved settings, the quick side replies, the ElevenLabs and Cartesia voices and their fallback, and how a
+running task takes the user's words and speaks its first line. No microphone, no API request, no sound."""
 import asyncio
 import base64
 import copy
@@ -12,6 +12,7 @@ import pytest
 from anthropic.types import Message
 
 import mac
+import main
 import memory
 import menubar
 import mouth
@@ -210,11 +211,26 @@ def test_words_that_arrive_as_the_task_finishes_carry_it_on(remembered: Memory) 
     assert driver._anthropic.requests[1]["messages"][-1]["content"] == [text(USER_SAID.format(words="and add milk"))]
 
 
-def stream(handler) -> mouth.Mouth:
-    voice = mouth.Mouth("voice-id", "eleven_v4_turbo", "Samantha")
-    voice._key = "key"
-    voice._http = httpx2.AsyncClient(transport=httpx2.MockTransport(handler))
-    return voice
+def stream(handler, service: str = "elevenlabs", voice: str = "voice-id", model: str = "eleven_v4_turbo") -> mouth.Mouth:
+    speaker = mouth.Mouth(service, voice, model, "Samantha")
+    speaker._key = "key"
+    speaker._http = httpx2.AsyncClient(transport=httpx2.MockTransport(handler))
+    return speaker
+
+
+def fake_speakers(played: list) -> type:
+    """sounddevice's output stream, recording its settings, each write, and the stop."""
+    class Speakers:
+        def __init__(self, **settings: object) -> None:
+            played.append(settings)
+
+        def start(self) -> None: pass
+        def write(self, audio: bytes) -> None: played.append(audio)
+        def stop(self) -> None: played.append("stop")
+        def abort(self) -> None: pass
+        def close(self) -> None: pass
+
+    return Speakers
 
 
 @pytest.mark.parametrize(("status", "keeps_key"), [(401, False), (402, False), (500, True)])
@@ -238,17 +254,7 @@ def test_the_elevenlabs_request_asks_for_raw_audio_in_the_chosen_voice(monkeypat
         sent.append(request)
         return httpx2.Response(200, content=b"\x01\x02\x03\x04\x05")  # an odd byte count: half a sample at the end
 
-    class Speakers:
-        def __init__(self, **settings: object) -> None:
-            played.append(settings)
-
-        def start(self) -> None: pass
-        def write(self, audio: bytes) -> None: played.append(audio)
-        def stop(self) -> None: played.append("stop")
-        def abort(self) -> None: pass
-        def close(self) -> None: pass
-
-    monkeypatch.setattr(mouth.sounddevice, "RawOutputStream", Speakers)
+    monkeypatch.setattr(mouth.sounddevice, "RawOutputStream", fake_speakers(played))
     asyncio.run(stream(handler).speak("Hello."))
     request = sent[0]
     assert request.url.path == "/v1/text-to-speech/voice-id/stream" and request.url.params["output_format"] == mouth.OUTPUT_FORMAT
@@ -257,6 +263,48 @@ def test_the_elevenlabs_request_asks_for_raw_audio_in_the_chosen_voice(monkeypat
     assert played[0]["samplerate"] == mouth.OUTPUT_RATE and b"".join(audio) == b"\x01\x02\x03\x04", played
     # the speakers crackle when stopped right after the voice, so half a second of silence plays first
     assert tail == bytes(len(tail)) and len(tail) == mouth.OUTPUT_RATE // 2 * mouth.SAMPLE_BYTES and stopped == "stop", played
+
+
+def test_cartesia_is_asked_for_raw_audio_at_the_rate_the_speakers_play(monkeypatch: pytest.MonkeyPatch) -> None:
+    sent, played = [], []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        sent.append(request)
+        return httpx2.Response(200, content=b"\x01\x02\x03\x04")
+
+    monkeypatch.setattr(mouth.sounddevice, "RawOutputStream", fake_speakers(played))
+    asyncio.run(stream(handler, "cartesia", "", "").speak("Hello."))
+    request, body = sent[0], json.loads(sent[0].content)
+    print(request.url, dict(request.headers), body)
+    assert request.url == mouth.CARTESIA_STREAM and request.headers["authorization"] == "Bearer key"
+    assert request.headers["cartesia-version"] == mouth.CARTESIA_VERSION
+    service = mouth.SERVICES["cartesia"]
+    assert body == {"model_id": service.model, "transcript": "Hello.", "voice": service.voice,
+                    "output_format": {"container": "raw", "encoding": "pcm_s16le", "sample_rate": mouth.OUTPUT_RATE}}
+    assert played[0]["samplerate"] == mouth.OUTPUT_RATE and played[1] == b"\x01\x02\x03\x04" and played[-1] == "stop", played
+
+
+@pytest.mark.parametrize(("service", "variable"), [("elevenlabs", "ELEVENLABS_API_KEY"), ("cartesia", "CARTESIA_API_KEY")])
+def test_each_service_reads_only_its_own_key(monkeypatch: pytest.MonkeyPatch, service: str, variable: str) -> None:
+    """With both keys set, the chosen service must not send the other service's key."""
+    monkeypatch.setenv("ELEVENLABS_API_KEY", "eleven-key")
+    monkeypatch.setenv("CARTESIA_API_KEY", "cartesia-key")
+    assert mouth.Mouth(service, "", "", "Samantha")._key == {"ELEVENLABS_API_KEY": "eleven-key",
+                                                              "CARTESIA_API_KEY": "cartesia-key"}[variable]
+
+
+def test_a_chosen_voice_and_model_replace_the_service_defaults() -> None:
+    speaker = mouth.Mouth("cartesia", "my-voice", "sonic-3", "Samantha")
+    assert (speaker._voice, speaker._model) == ("my-voice", "sonic-3")
+
+
+def test_an_unknown_voice_service_is_a_config_error(tmp_path: Path) -> None:
+    config = tmp_path / "config.toml"
+    config.write_text('voice_service = "playht"\n')
+    with pytest.raises(main.ConfigError, match="voice_service"):
+        main.load_config(config)
+    config.write_text('voice_service = "cartesia"\n')
+    assert main.load_config(config).voice_service == "cartesia"
 
 
 @pytest.mark.parametrize("region", [(0, 0, 200, 351), (10, 10, 900, 60), None], ids=["tall zoom", "wide zoom", "screen"])

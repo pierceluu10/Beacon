@@ -23,13 +23,13 @@ You:    (holding ⌥Space) "Actually make it Saturday."
 Beacon: "Got it, Saturday."
 ```
 
-Speech recognition runs on this Mac. The paid services are the Anthropic API and, if you add a key, ElevenLabs.
+Speech recognition runs on this Mac. The paid services are the Anthropic API and, if you add a key, ElevenLabs or Cartesia.
 
 ## Run it
 
 ```bash
 export ANTHROPIC_API_KEY=...       # if it is not already in your shell profile
-export ELEVENLABS_API_KEY=...      # optional: a natural voice instead of macOS `say`
+export ELEVENLABS_API_KEY=...      # optional: a natural voice instead of macOS `say` (see Voice for Cartesia)
 uv sync
 uv run python main.py
 ```
@@ -103,10 +103,17 @@ send. Never put passwords in memory.
 
 ## Voice
 
-With `ELEVENLABS_API_KEY` set, Beacon streams speech from ElevenLabs (`eleven_v4_turbo`, voice "George") straight to the
-speakers, so it starts talking in about a tenth of a second. Change `voice` in the config to any voice id from
-your ElevenLabs library. If the key is rejected or out of credits it says so in the terminal and uses macOS
-`say` for the rest of the run; a network error falls back for that line only.
+Beacon streams speech straight to the speakers from a voice service, so it starts talking a fraction of a second
+after it has a line. Two are built in; pick one with `voice_service` in the config and set its key:
+
+| `voice_service` | Key | Default voice and model |
+|---|---|---|
+| `"elevenlabs"` (default) | `ELEVENLABS_API_KEY` | "George", `eleven_v4_turbo` |
+| `"cartesia"` | `CARTESIA_API_KEY` (a standard key; admin keys cannot make speech) | "Daniel", `sonic-3.6` |
+
+Set `voice` to any voice id from that service's library, and `voice_model` to change the model. Without the
+chosen service's key Beacon uses macOS `say`. If the key is rejected or out of credits it says so in the
+terminal and uses `say` for the rest of the run; a network error falls back for that line only.
 
 ## Work on your whole Mac
 
@@ -193,9 +200,10 @@ Optional, in `~/.beacon/config.toml`. Unknown keys are an error. The menu's choi
 | `profile_dir` | `"~/.beacon/chrome-profile"` | The agent's own Chrome profile. |
 | `blocked_hosts` | `[]` | Sites it may never navigate to, for example your bank. Links and redirects that land there are not checked. |
 | `stt_model` | `"MEDIUM_STREAMING"` | Or `"SMALL_STREAMING"` (less memory, slightly less accurate). |
-| `voice` | `"JBFqnCBsd6RMkjVDRZzb"` | ElevenLabs voice id, used when `ELEVENLABS_API_KEY` is set. |
-| `voice_model` | `"eleven_v4_turbo"` | ElevenLabs model. |
-| `say_voice` | `"Samantha"` | The macOS voice without an ElevenLabs key; any voice from `say -v '?'`. |
+| `voice_service` | `"elevenlabs"` | Or `"cartesia"`. See [Voice](#voice). |
+| `voice` | `""` | A voice id from that service; empty for its default. |
+| `voice_model` | `""` | A model from that service; empty for its default. |
+| `say_voice` | `"Samantha"` | The macOS voice without a voice service key; any voice from `say -v '?'`. |
 | `extension_token` | `""` | Set it to work in your own Chrome through the Playwright Extension (see above). |
 
 ## How it works
@@ -204,7 +212,7 @@ Optional, in `~/.beacon/config.toml`. Unknown keys are an error. The menu's choi
 |---|---|
 | `main.py` | Configuration and the conversation loop, including listening while a task runs. |
 | `voice.py` | Moonshine speech-to-text on the microphone, push-to-talk, and wake / yes / no / stop parsing. |
-| `mouth.py` | Speech out: ElevenLabs streaming, or macOS `say` without a key. |
+| `mouth.py` | Speech out: ElevenLabs or Cartesia streaming, or macOS `say` without a key. |
 | `side.py` | The fast model behind the greeting and the quick replies mid-task. |
 | `memory.py` | Turns your notes and memory files into the first message of a conversation. |
 | `agent.py` | Claude driving Chrome through the Playwright MCP server. |
