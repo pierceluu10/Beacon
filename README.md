@@ -108,7 +108,7 @@ after it has a line. Two are built in; pick one with `voice_service` in the conf
 
 | `voice_service` | Key | Default voice and model |
 |---|---|---|
-| `"elevenlabs"` (default) | `ELEVENLABS_API_KEY` | "George", `eleven_v4_turbo` |
+| `"elevenlabs"` (default) | `ELEVENLABS_API_KEY` | "Vance", a casual American voice, `eleven_v4_turbo` |
 | `"cartesia"` | `CARTESIA_API_KEY` (a standard key; admin keys cannot make speech) | "Daniel", `sonic-3.6` |
 
 Set `voice` to any voice id from that service's library, and `voice_model` to change the model. Without the

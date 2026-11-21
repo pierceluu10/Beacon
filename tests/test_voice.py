@@ -66,10 +66,14 @@ MOUTH = SilentMouth()
     ("Hey Davis, open YouTube", None),
     ("Well hello there Jarvis, open YouTube", None),
     ("Open YouTube and search for Jarvis", None),
+    ("No, I'm not. I can genuinely play anything. Hey, Jarvis.", ""),
+    ("Sorry about that. Hey Jarvis, open YouTube.", "open YouTube"),
+    ("It's 5.07 now? Jarvis what day is it?", "what day is it"),
+    ("Nice day. The car outside is red, Jarvis.", None),
     ("", None),
     ("?!", None),
 ])
-def test_wake_command_is_what_follows_the_name_in_the_first_three_words(transcript, command):
+def test_wake_command_is_what_follows_the_name_in_the_first_three_words_of_a_sentence(transcript, command):
     assert wake_command(transcript, NAMES) == command, f"{transcript!r} gave {wake_command(transcript, NAMES)!r}"
 
 
