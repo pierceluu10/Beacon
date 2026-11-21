@@ -25,12 +25,19 @@ SAMPLE_BYTES = 2
 # silence first still crackled sometimes, 0.5 s never did.
 QUIET_TAIL = bytes(OUTPUT_RATE // 2 * SAMPLE_BYTES)
 SPEECH_TIMEOUT = httpx2.Timeout(10, connect=5)
+# How everything Beacon says should sound; every prompt that writes words to be spoken includes it.
+SPEAKING_STYLE = ("Sound like a relaxed, friendly friend helping out, not an assistant reading a script: everyday words, "
+                  "contractions, and short sentences the way people actually say them out loud. Skip formal phrasing and "
+                  "filler, and don't repeat back what the user already knows.")
+# Below ElevenLabs' default of 0.5 for a livelier, less monotone delivery; it suggests 0.3 to 0.5 for conversation.
+ELEVENLABS_STABILITY = 0.4
 REJECTED = (401, 402, 403)  # bad key, no credits left, or the voice is not on this account: no point retrying each line
 
 
 def elevenlabs_request(http: httpx2.AsyncClient, key: str, voice: str, model: str, text: str):
     return http.stream("POST", ELEVENLABS_STREAM.format(voice=voice), params={"output_format": OUTPUT_FORMAT},
-                       headers={"xi-api-key": key}, json={"text": text, "model_id": model})
+                       headers={"xi-api-key": key},
+                       json={"text": text, "model_id": model, "voice_settings": {"stability": ELEVENLABS_STABILITY}})
 
 
 def cartesia_request(http: httpx2.AsyncClient, key: str, voice: str, model: str, text: str):
@@ -50,7 +57,7 @@ class Service:
 
 
 SERVICES = {
-    "elevenlabs": Service("ElevenLabs", "ELEVENLABS_API_KEY", "JBFqnCBsd6RMkjVDRZzb", "eleven_v4_turbo", elevenlabs_request),
+    "elevenlabs": Service("ElevenLabs", "ELEVENLABS_API_KEY", "kQWyq6XfiOkDFCzENZHW", "eleven_v4_turbo", elevenlabs_request),
     "cartesia": Service("Cartesia", "CARTESIA_API_KEY", "47c38ca4-5f35-497b-b1a3-415245fb35e1", "sonic-3.6", cartesia_request),
 }
 

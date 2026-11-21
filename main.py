@@ -14,7 +14,7 @@ from mcp import MCPError
 from agent import Agent, BrowserClosedError, BrowserStartError
 from mac import MacAgent, MacPermissionError
 from memory import Memory
-from mouth import SERVICES, Mouth
+from mouth import SERVICES, SPEAKING_STYLE, Mouth
 from side import CHANGE, STOP, Side
 from voice import Ears, Heard, MicrophoneSilentError, is_dismissal, is_stop, parse_yes_no, wake_command
 
@@ -232,7 +232,8 @@ def build_agent(config: Config, mode: str, ears: Ears, memory: Memory, headless:
         raise ConfigError(f"profile_dir must not be inside {memory.folder}: every file in it can be uploaded.")
     profile_dir.mkdir(parents=True, exist_ok=True)
     memory.folder.mkdir(parents=True, exist_ok=True)
-    prompt = (MAC_PROMPT if mode == MAC else SYSTEM_PROMPT).format(agent_name=config.agent_name, memory_folder=memory.folder)
+    prompt = (MAC_PROMPT if mode == MAC else SYSTEM_PROMPT).format(agent_name=config.agent_name, memory_folder=memory.folder,
+                                                                   speaking_style=SPEAKING_STYLE)
     asking = partial(ask, ears, names=config.names)
     if mode == MAC:
         return MacAgent(config.model, memory, prompt, asking, ears.say_later)

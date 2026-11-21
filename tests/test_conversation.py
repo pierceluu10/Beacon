@@ -258,7 +258,8 @@ def test_the_elevenlabs_request_asks_for_raw_audio_in_the_chosen_voice(monkeypat
     asyncio.run(stream(handler).speak("Hello."))
     request = sent[0]
     assert request.url.path == "/v1/text-to-speech/voice-id/stream" and request.url.params["output_format"] == mouth.OUTPUT_FORMAT
-    assert request.headers["xi-api-key"] == "key" and json.loads(request.content) == {"text": "Hello.", "model_id": "eleven_v4_turbo"}
+    assert request.headers["xi-api-key"] == "key" and json.loads(request.content) == {
+        "text": "Hello.", "model_id": "eleven_v4_turbo", "voice_settings": {"stability": mouth.ELEVENLABS_STABILITY}}
     *audio, tail, stopped = played[1:]
     assert played[0]["samplerate"] == mouth.OUTPUT_RATE and b"".join(audio) == b"\x01\x02\x03\x04", played
     # the speakers crackle when stopped right after the voice, so half a second of silence plays first
@@ -296,6 +297,15 @@ def test_each_service_reads_only_its_own_key(monkeypatch: pytest.MonkeyPatch, se
 def test_a_chosen_voice_and_model_replace_the_service_defaults() -> None:
     speaker = mouth.Mouth("cartesia", "my-voice", "sonic-3", "Samantha")
     assert (speaker._voice, speaker._model) == ("my-voice", "sonic-3")
+
+
+@pytest.mark.parametrize("mode", [main.WINDOW, main.MAC])
+def test_every_prompt_that_writes_spoken_words_carries_the_speaking_style(tmp_path: Path, mode: str) -> None:
+    """The task prompts, the greeting and the mid-task replies all write words that are spoken: they must sound the same."""
+    config = main.Config(profile_dir=str(tmp_path / "profile"))
+    built = main.build_agent(config, mode, SimpleNamespace(say_later=None), Memory(tmp_path / "notes.md", tmp_path / "files"))
+    for prompt in (built._system[0]["text"], side.GREETING_PROMPT, side.REPLY_PROMPT):
+        assert mouth.SPEAKING_STYLE in prompt, prompt
 
 
 def test_an_unknown_voice_service_is_a_config_error(tmp_path: Path) -> None:

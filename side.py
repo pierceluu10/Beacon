@@ -4,21 +4,24 @@ from typing import Literal, NamedTuple
 
 from anthropic import AsyncAnthropic
 
+from mouth import SPEAKING_STYLE
+
 GREETING_TOKENS = 60
 REPLY_TOKENS = 300
 CONTINUE, CHANGE, STOP = "continue", "change", "stop"
 GREETING_PROMPT = ("You are {agent_name}, a voice assistant that uses the user's computer for them. You have just started up. "
                    "Say one short, warm line of at most 8 words, like \"Hey Sam, what are we doing today?\": greet the user, "
                    "by name only if their notes give it, and ask what they want to do. Do not introduce yourself. Plain "
-                   "text, nothing else.")
+                   "text, nothing else. " + SPEAKING_STYLE)
 NO_NOTES = "The user has not written any notes."
 NOTES = "The user's notes:\n{notes}"
 REPLY_PROMPT = (
     "You are {agent_name}, a voice assistant in the middle of a task on the user's computer. The user just spoke to you "
-    "while you work. Reply out loud in one or two short plain sentences, as a person would: answer questions from what is "
+    "while you work. Reply out loud in one or two short sentences: answer questions from what is "
     "on screen and what you have done, and acknowledge requests. Never claim something happened that the steps do not "
     "show. Then decide what happens to the task: continue (a question or a remark: nothing changes), change (they want "
-    "something different, more, or less: the task is handed their words and adapts), or stop (they want it to stop).")
+    "something different, more, or less: the task is handed their words and adapts), or stop (they want it to stop). "
+    + SPEAKING_STYLE)
 REPLY_TOOL = {
     "name": "reply",
     "description": "What to say out loud now, and what happens to the task.",
