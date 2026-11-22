@@ -1,6 +1,6 @@
-// The menu bar bird. macOS 26 does not show a menu bar item that Python creates, so this helper shows it, owns the
+// The menu bar mark. macOS 26 does not show a menu bar item that Python creates, so this helper shows it, owns the
 // push-to-talk key, the key recorder and the Memory window, and passes what happens on to Beacon as JSON lines.
-// Arguments: the bird icon, the memory notes file, the memory folder.
+// Arguments: the mark icon, the memory notes file, the memory folder.
 // stdin, one line per change: {"state", "mode", "token", "wake", "hotkey": {"code", "modifiers", "label"}, "name"}.
 // stdout, one line per event: {"action": "push", "down": Bool} | {"action": "hotkey", "hotkey": {...}} |
 // {"action": "wake" | "power" | "mac" | "chrome" | "window" | "quit"}. It quits when stdin closes.
@@ -23,12 +23,12 @@ struct Status: Decodable, Equatable {
 }
 
 let barPoints: CGFloat = 22  // the menu bar's usable height
-let birdPoints: CGFloat = 17  // the bird's height; bird.png is cropped to the bird, so this is all bird
+let markPoints: CGFloat = 18  // mark.png is cropped to its ink at 2x this height
 let glyphPoints: CGFloat = 13
 let glyphGap: CGFloat = 3
 let dimmed: CGFloat = 0.35
 let pulseSeconds = 0.5
-let headlines = ["off": "Off", "starting": "Starting…", "ready": "Ready", "hearing": "Listening…",
+let stateNames = ["off": "Off", "starting": "Starting…", "ready": "Ready", "hearing": "Listening…",
                  "working": "Working…", "speaking": "Speaking…"]
 let glyphs = ["starting": "ellipsis", "hearing": "mic.fill", "working": "ellipsis", "speaking": "waveform"]
 let pulsing: Set<String> = ["starting", "working", "speaking"]
@@ -48,19 +48,19 @@ func send(_ message: [String: Any]) {
     fflush(stdout)
 }
 
-/// The bird, with a small glyph beside it for what Beacon is doing: a microphone while it listens to you, dots while it
+/// The mark, with a small glyph beside it for what Beacon is doing: a microphone while it listens to you, dots while it
 /// works, a waveform while it talks. Dimmed while off or starting.
-func indicator(bird: NSImage?, state: String, faded: Bool) -> NSImage {
-    let glyph = glyphs[state].flatMap { NSImage(systemSymbolName: $0, accessibilityDescription: headlines[state]) }?
+func indicator(mark: NSImage?, state: String, faded: Bool) -> NSImage {
+    let glyph = glyphs[state].flatMap { NSImage(systemSymbolName: $0, accessibilityDescription: stateNames[state]) }?
         .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: glyphPoints, weight: .semibold))
-    let birdWidth = bird.map { birdPoints * $0.size.width / $0.size.height } ?? birdPoints
-    let width = birdWidth + (glyph.map { glyphGap + $0.size.width } ?? 0)
+    let markWidth = mark.map { markPoints * $0.size.width / $0.size.height } ?? markPoints
+    let width = markWidth + (glyph.map { glyphGap + $0.size.width } ?? 0)
     let image = NSImage(size: NSSize(width: width, height: barPoints), flipped: false) { _ in
-        let birdFraction = state == "off" || state == "starting" ? dimmed : 1
-        bird?.draw(in: NSRect(x: 0, y: (barPoints - birdPoints) / 2, width: birdWidth, height: birdPoints), from: .zero,
-                   operation: .sourceOver, fraction: birdFraction)
+        let markFraction = state == "off" || state == "starting" ? dimmed : 1
+        mark?.draw(in: NSRect(x: 0, y: (barPoints - markPoints) / 2, width: markWidth, height: markPoints), from: .zero,
+                   operation: .sourceOver, fraction: markFraction)
         if let glyph {
-            let frame = NSRect(x: birdWidth + glyphGap, y: (barPoints - glyph.size.height) / 2,
+            let frame = NSRect(x: markWidth + glyphGap, y: (barPoints - glyph.size.height) / 2,
                                width: glyph.size.width, height: glyph.size.height)
             glyph.draw(in: frame, from: .zero, operation: .sourceOver, fraction: faded ? dimmed : 1)
         }
@@ -77,9 +77,7 @@ func modifierLabel(_ modifiers: UInt32) -> String {
 
 final class Menu: NSObject {
     let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-    let bird: NSImage?
-    let headline = NSMenuItem(title: "Starting…", action: nil, keyEquivalent: "")
-    let hint = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+    let mark: NSImage?
     lazy var wake = entry("", "wake")
     lazy var hotkeyItem = NSMenuItem(title: "Push-to-Talk Key…", action: #selector(recordHotkey), keyEquivalent: "")
     lazy var memoryItem = NSMenuItem(title: "Memory…", action: #selector(openMemory), keyEquivalent: "")
@@ -95,20 +93,18 @@ final class Menu: NSObject {
     var faded = false
 
     init(icon: String, memory: MemoryWindow) {
-        bird = NSImage(contentsOfFile: icon)
+        mark = NSImage(contentsOfFile: icon)
         self.memory = memory
         super.init()
-        item.button?.image = indicator(bird: bird, state: "starting", faded: false)
+        item.button?.image = indicator(mark: mark, state: "starting", faded: false)
         let menu = NSMenu()
         menu.autoenablesItems = false
-        headline.isEnabled = false
-        hint.isEnabled = false
         for target in [hotkeyItem, memoryItem] { target.target = self }
         let works = NSMenuItem(title: "Works in", action: nil, keyEquivalent: "")
         works.submenu = NSMenu()
         works.submenu?.autoenablesItems = false
         [wholeMac, myChrome, ownWindow].forEach { works.submenu?.addItem($0) }
-        [headline, hint, .separator(), wake, hotkeyItem, memoryItem, works, .separator(), power, entry("Quit Beacon", "quit")]
+        [wake, hotkeyItem, memoryItem, works, .separator(), power, entry("Quit Beacon", "quit")]
             .forEach { menu.addItem($0) }
         item.menu = menu
         Timer.scheduledTimer(withTimeInterval: pulseSeconds, repeats: true) { [weak self] _ in self?.pulse() }
@@ -135,8 +131,6 @@ final class Menu: NSObject {
         guard status != self.status else { return }
         self.status = status
         let wakePhrase = "“Hey \(status.name)”"
-        headline.title = headlines[status.state] ?? status.state
-        hint.title = "Hold \(status.hotkey.label) to talk" + (status.wake ? ", or say \(wakePhrase)" : "")
         wake.title = "Listen for \(wakePhrase)"
         wake.state = status.wake ? .on : .off
         hotkeyItem.title = "Push-to-Talk Key: \(status.hotkey.label)…"
@@ -151,7 +145,7 @@ final class Menu: NSObject {
     }
 
     func draw() {
-        item.button?.image = indicator(bird: bird, state: shown, faded: faded && pulsing.contains(shown))
+        item.button?.image = indicator(mark: mark, state: shown, faded: faded && pulsing.contains(shown))
     }
 
     func pulse() {
