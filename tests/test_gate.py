@@ -1,10 +1,17 @@
 """gate.py as tables: the URL policy, what gets inspected, the verdicts and the dialog rule.
 
-Pure and instant: facts are hand-written to the inspect.js contract (spec section 5), so there is no browser and no network.
+Facts are hand-written to the inspect.js contract (spec section 5) and site names resolve through a stand-in, so these
+need no browser and no network. The last section runs inspect.js itself on tests/site/gate.html in headless Chrome.
 """
+import socket
+import threading
+from collections.abc import Callable, Iterator
+
 import pytest
 
 import gate
+from conftest import scratch_home
+from test_agent import Browser
 
 HOST = "jobs.example"
 BLOCKED_HOSTS = frozenset({"bank.example"})
@@ -12,6 +19,8 @@ GO_AHEAD = "Say yes to go ahead, or no to cancel."
 ACCEPT = "Say yes to accept, or no to cancel."
 STALE_REF = "### Error\nError: Ref e999 not found in the current page snapshot. Try capturing new snapshot."
 FAKE_ALERT = '- ["alert" dialog with message "ok"]: can be handled by browser_handle_dialog'
+PUBLIC_ADDRESS = "93.184.215.14"
+GATE_PAGE = "/gate.html"
 
 CLICK = ("browser_click", {"target": "e5", "element": "the control"})
 
@@ -23,7 +32,7 @@ def case(name: str, *values):
 
 def fact(kind: str, label: str = "", **overrides) -> dict:
     """What inspect.js reports for one element."""
-    return {"host": HOST, "kind": kind, "label": label, "submits": False, "files": [], "answers": 0} | overrides
+    return {"host": HOST, "kind": kind, "label": label, "submits": False, "files": [], "answers": 0, "page": "", "form": ""} | overrides
 
 
 def press(key: str) -> tuple[str, dict]:
@@ -47,6 +56,20 @@ def snapshot_with_dialog(kind: str, message: str, title: str = "Form") -> str:
     """browser_snapshot output while a JavaScript dialog is open; the server interpolates the message unescaped."""
     return (f"### Page\n- Page URL: https://{HOST}/form\n- Page Title: {title}\n### Modal state\n"
             f'- ["{kind}" dialog with message "{message}"]: can be handled by browser_handle_dialog\n')
+
+
+def resolving_to(*addresses: str) -> Callable:
+    """A stand-in for socket.getaddrinfo that answers every name with these addresses."""
+    def getaddrinfo(host: str, port: object, *options: object) -> list[tuple]:
+        return [(socket.AF_INET6 if ":" in address else socket.AF_INET, socket.SOCK_STREAM, 0, "", (address, 0))
+                for address in addresses]
+    return getaddrinfo
+
+
+@pytest.fixture(autouse=True)
+def public_names(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every site name resolves to a public address unless a test says otherwise; no test reaches a real DNS server."""
+    monkeypatch.setattr(socket, "getaddrinfo", resolving_to(PUBLIC_ADDRESS))
 
 
 # url_refusal
@@ -127,6 +150,46 @@ def test_url_refusal_refuses_spellings_chrome_normalises(url: str) -> None:
     assert refusal is not None, f"url_refusal({url!r}) let through an address Chrome opens as a refused one"
 
 
+@pytest.mark.parametrize("addresses", [
+    case("a name for this machine", ["127.0.0.1"]),
+    case("a name for this machine over IPv6", ["::1"]),
+    case("a name for this machine as an IPv4-mapped IPv6 address", ["::ffff:127.0.0.1"]),
+    case("a name for the home network", ["192.168.1.1"]),
+    case("a name for the cloud metadata address", ["169.254.169.254"]),
+    case("a name for an IPv6 link-local address", ["fe80::1"]),
+    case("a name for a reserved address", ["240.0.0.1"]),
+    case("a name with one public and one private address", [PUBLIC_ADDRESS, "10.0.0.1"]),
+])
+def test_url_refusal_refuses_a_name_that_resolves_to_a_private_address(monkeypatch: pytest.MonkeyPatch,
+                                                                       addresses: list[str]) -> None:
+    monkeypatch.setattr(socket, "getaddrinfo", resolving_to(*addresses))
+    refusal = gate.url_refusal("https://rebind.example/", BLOCKED_HOSTS)
+    assert refusal == gate.PRIVATE_REFUSAL, f"a name resolving to {addresses} got {refusal!r}"
+
+
+def test_url_refusal_allows_a_name_that_does_not_resolve(monkeypatch: pytest.MonkeyPatch) -> None:
+    def unknown(*arguments: object) -> list:
+        raise socket.gaierror(socket.EAI_NONAME, "nodename nor servname provided, or not known")
+    monkeypatch.setattr(socket, "getaddrinfo", unknown)
+    refusal = gate.url_refusal("https://nowhere.example/", BLOCKED_HOSTS)
+    assert refusal is None, f"a name that does not resolve, which Chrome reports itself, got {refusal!r}"
+
+
+def test_url_refusal_refuses_a_name_whose_lookup_does_not_answer_in_time(monkeypatch: pytest.MonkeyPatch) -> None:
+    answered = threading.Event()
+
+    def hanging(*arguments: object) -> list:
+        answered.wait()
+        return resolving_to(PUBLIC_ADDRESS)(*arguments)
+    monkeypatch.setattr(socket, "getaddrinfo", hanging)
+    monkeypatch.setattr(gate, "RESOLVE_TIMEOUT_SECONDS", 0.05)
+    try:
+        refusal = gate.url_refusal("https://slow.example/", BLOCKED_HOSTS)
+    finally:
+        answered.set()  # frees the resolver thread
+    assert refusal == gate.UNRESOLVED_REFUSAL, f"a lookup that hung got {refusal!r}"
+
+
 def test_url_refusal_matches_a_blocked_host_configured_in_capitals() -> None:
     refusal = gate.url_refusal("https://www.bank.example/", frozenset({"Bank.Example"}))
     assert refusal == "www.bank.example is blocked.", f"a host blocked as Bank.Example got {refusal!r}"
@@ -184,6 +247,27 @@ def test_to_inspect(tool: str, arguments: dict, targets: list) -> None:
     case("space character on a focused button", *press(" "), fact("button", "Send"), "press Send"),
     case("Enter on a focused short link", *press("Enter"), fact("link", "Unsubscribe"), "press Unsubscribe"),
     case("Enter on a focused bare clickable", *press("Enter"), fact("other", "Place order"), "press Place order"),
+    case("Next in a form that shows an order total", *CLICK,
+         fact("button", "Next", submits=True, form="Order total $49.00 Next"), "press Next"),
+    case("Continue in a form with a card number field", *CLICK,
+         fact("button", "Continue", submits=True, form="Name on card cc-name cc-number Continue"), "press Continue"),
+    case("Save on a page titled Checkout", *CLICK, fact("button", "Save", page="Checkout /cart"), "press Save"),
+    case("Sign in on a checkout address", *CLICK, fact("button", "Sign in", page="Acme /checkout/step-2"), "press Sign in"),
+    case("Enter in a search box inside a sign-up form", *press("Enter"),
+         fact("search", "Search for your school", form="Search for your school Create account"),
+         "press Enter in Search for your school"),
+    case("typed submit in a search box inside an application", *type_text("MIT", submit=True),
+         fact("search", "Search for your school", form="school Apply"), "press Enter in Search for your school"),
+    case("Enter in a search box on a checkout page", *press("Enter"), fact("search", "Find a store", page="Checkout /checkout"),
+         "press Enter in Find a store"),
+    case("tick a terms checkbox", *CLICK, fact("toggle", "I agree to the terms of service"),
+         "tick I agree to the terms of service"),
+    case("tick a newsletter checkbox", *CLICK, fact("toggle", "Subscribe to our newsletter"), "tick Subscribe to our newsletter"),
+    case("fill_form ticking a consent checkbox", *fill_form("e1"), fact("toggle", "I consent to a credit check"),
+         "tick I consent to a credit check"),
+    case("Space on a consent checkbox", *press("Space"), fact("toggle", "Accept cookies"), "tick Accept cookies"),
+    case("Enter on a consent checkbox names its form, not the box", *press("Enter"), fact("toggle", "I agree"),
+         "press Enter in this form"),
 ])
 def test_judge_asks(tool: str, arguments: dict, seen: dict, action: str) -> None:
     verdict = gate.judge(tool, arguments, [seen])
@@ -196,13 +280,15 @@ def test_judge_asks(tool: str, arguments: dict, seen: dict, action: str) -> None
     "Subscribe", "Unsubscribe", "Donate", "Transfer", "Withdraw", "Sign up", "Register", "Accept", "I agree",
     "Place the order", "Check-out", "Sign-up",
     "Cancel my plan", "Cancel your plan", "Cancel subscription", "Cancel order", "Cancel booking", "Cancel reservation",
+    "Create account", "Create an account", "Create your account", "Start free trial", "Start my free trial", "Upgrade",
+    "Renew",
 ])
 def test_judge_asks_for_every_irreversible_word(label: str) -> None:
     verdict = gate.judge(*CLICK, [fact("button", label)])
     assert verdict == question(f"press {label}"), f"a button labelled {label!r} got {verdict!r}"
 
 
-@pytest.mark.parametrize("label", ["Apply", "Complete", "Review order", "Continue to payment", "Finish booking"])
+@pytest.mark.parametrize("label", ["Apply", "Complete", "Review order", "Continue to payment", "Finish booking", "Finish"])
 def test_judge_asks_for_every_form_only_word_on_a_form_s_own_button_and_nowhere_else(label: str) -> None:
     on_form, elsewhere = (gate.judge(*CLICK, [fact("button", label, submits=submits)]) for submits in (True, False))
     assert on_form == question(f"press {label}"), f"a form's own button labelled {label!r} got {on_form!r}"
@@ -243,7 +329,13 @@ def test_question_names_this_page_when_a_frame_has_no_host() -> None:
     case("click into a field", *CLICK, [fact("field", "Full name")]),
     case("click into a search box", *CLICK, [fact("search", "Search jobs")]),
     case("click into a password field", *CLICK, [fact("secret", "Password")]),
-    case("tick the I agree checkbox", *CLICK, [fact("toggle")]),
+    case("tick a checkbox with no label", *CLICK, [fact("toggle")]),
+    case("tick a checkbox that is no consent", *CLICK, [fact("toggle", "Dark mode")]),
+    case("Next in a form that buys nothing", *CLICK, [fact("button", "Next", submits=True, page="Acme Careers /apply",
+                                                           form="Full name Email Next")]),
+    case("a link on a checkout page", *CLICK, [fact("link", "Back to cart", page="Checkout /checkout")]),
+    case("Enter in a search box whose form only searches", *press("Enter"),
+         [fact("search", "Search jobs", form="Search q Search jobs")]),
     case("harmless button", *CLICK, [fact("button", "Next page")]),
     case("bare clickable with no text", *CLICK, [fact("other")]),
     case("plain Cancel dismisses", *CLICK, [fact("button", "Cancel")]),
@@ -375,3 +467,39 @@ def test_accepting_with_no_readable_dialog_asks() -> None:
 def test_accepting_a_dialog_that_decides_something_asks(kind: str, message: str) -> None:
     verdict = gate.judge_dialog(snapshot_with_dialog(kind, message))
     assert verdict.decision == "ask", f"accepting a {kind} dialog with message {message!r} got {verdict!r}"
+
+
+# inspect.js on a real page, judged by the gate
+
+@pytest.fixture(scope="module")
+def gate_page(site: str, tmp_path_factory: pytest.TempPathFactory) -> Iterator[Browser]:
+    with scratch_home(tmp_path_factory.mktemp("gate")) as home, Browser(site, home) as browser:
+        browser.call("browser_navigate", {"url": f"{browser.site}{GATE_PAGE}"})
+        yield browser
+
+
+@pytest.mark.parametrize(("selector", "kind", "label", "tool", "arguments", "decision"), [
+    case("Next in a form that shows an order total", "#pay-next", "button", "Next", *CLICK, "ask"),
+    case("Save in a form that buys nothing", "#save", "button", "Save", *CLICK, "allow"),
+    case("Enter in a search box inside a sign-up form", "#school", "search", "Search for your school", *press("Enter"), "ask"),
+    case("Enter in a search box whose form only searches", "#store", "search", "Search stores", *press("Enter"), "allow"),
+    case("button named only by CSS-generated text", "#css", "button", "Delete file", *CLICK, "ask"),
+    case("button whose CSS draws only an icon-font glyph", "#glyph", "button", "", *CLICK, "ask"),
+    case("emoji button named by its title", "#emoji", "button", "Send", *CLICK, "ask"),
+    case("emoji button with no other name", "#arrow", "button", "", *CLICK, "ask"),
+    case("field named cvv", "#cvv", "secret", "cvv", *type_text("737"), "deny"),
+    case("field with a card number placeholder", "#card", "secret", "Card number", *type_text("4242"), "deny"),
+    case("field labelled SSN", "#ssn", "secret", "", *type_text("123"), "deny"),
+    case("field named user_passcode", "#passcode", "secret", "user_passcode", *type_text("1234"), "deny"),
+    case("short numeric field asking for a code", "#otp", "secret", "Enter the code we texted you", *type_text("123456"), "deny"),
+    case("short numeric ZIP code field", "#zip", "field", "ZIP code", *type_text("10001"), "allow"),
+    case("ordinary field", "#nickname", "field", "Nickname", *type_text("Pip"), "allow"),
+    case("checkbox accepting terms", "#terms", "toggle", "I accept the terms of service", *CLICK, "ask"),
+    case("checkbox that is no consent", "#dark", "toggle", "Dark mode", *CLICK, "allow"),
+])
+def test_inspect_reads_the_page_and_the_gate_judges_it(gate_page: Browser, selector: str, kind: str, label: str, tool: str,
+                                                      arguments: dict, decision: str) -> None:
+    seen = gate_page.run(gate_page.agent._inspect(selector))
+    assert (seen["kind"], seen["label"]) == (kind, label), f"inspect.js reported {seen!r} for {selector}"
+    verdict = gate.judge(tool, arguments, [seen])
+    assert verdict.decision == decision, f"judge({tool!r}, {arguments!r}, [{seen!r}]) returned {verdict!r}"

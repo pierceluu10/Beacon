@@ -228,8 +228,11 @@ class MacAgent(Conversation):
             asked = f"{command}\n\n{NOW.format(now=datetime.now())}"
             self._messages.append(self._opening(command, [{"type": "text", "text": asked}]))
             for _ in range(MAX_STEPS):
-                reply = await self._anthropic.messages.create(model=self._model, max_tokens=MAX_TOKENS, system=self._system,
-                                                              tools=TOOLS, messages=self._messages, cache_control=CACHED)
+                reply = await self._step(self._anthropic.messages.create(
+                    model=self._model, max_tokens=MAX_TOKENS, system=self._system, tools=TOOLS,
+                    messages=self._messages, cache_control=CACHED))
+                if reply is None:
+                    continue
                 if reply.stop_reason != "tool_use":
                     if (answer := self._finished(reply)) is not None:
                         return answer

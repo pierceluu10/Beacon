@@ -8,8 +8,10 @@ from datetime import datetime
 from pathlib import Path
 
 from anthropic import DEFAULT_TIMEOUT, AsyncAnthropic, Timeout
-from mcp import ClientSession, StdioServerParameters
+from anthropic.types import Message
+from mcp import ClientSession, MCPError, StdioServerParameters
 from mcp.client.stdio import stdio_client
+from mcp.types import CONNECTION_CLOSED, REQUEST_TIMEOUT
 
 import everyday
 from gate import ALLOW, UNREADABLE, Verdict, judge, judge_dialog, to_inspect, url_refusal
@@ -28,6 +30,7 @@ PAGE_SETTLE_SECONDS = 0.5  # key presses return at once; the snapshot the model 
 SNAPSHOT_TOOL = "browser_snapshot"
 EVALUATE_TOOL = "browser_evaluate"
 BROWSER_CALL_TIMEOUT_SECONDS = 45  # above the server's 30 s browser_wait_for cap; a page script that never yields hangs a call
+LOST_BROWSER_CODES = frozenset({CONNECTION_CLOSED, REQUEST_TIMEOUT})
 ASK_TOOL = {
     "name": "ask_user",
     "description": "Say one short question out loud to the user and return their spoken answer. Use it for a missing fact, "
@@ -35,12 +38,12 @@ ASK_TOOL = {
     "input_schema": {"type": "object", "properties": {"question": {"type": "string"}}, "required": ["question"]},
 }
 INSPECT_JS = Path(__file__).with_name("inspect.js").read_text()
+# The values typed into fields the gate counts as secret, judged by the same rule, so what it refuses is also what is hidden
+SECRET_VALUES_JS = (f"() => [...document.querySelectorAll('input, textarea')].filter((entry) => ({INSPECT_JS})(entry).kind "
+                    "=== 'secret').map((entry) => entry.value).filter(Boolean)")
 MEDIA_PLAYING_JS = "() => [...document.querySelectorAll('video, audio')].some((media) => !media.paused && !media.muted)"
 EVALUATE_RESULT = re.compile(r"### Result\n(.*?)(?=\n###|\Z)", re.DOTALL)
 MEDIA_PLAYING_RESULT = "### Result\ntrue"
-SECRET_VALUES_JS = ("() => [...document.querySelectorAll('input[type=password], input[autocomplete*=cc- i], "
-                    "input[autocomplete*=one-time-code i], input[autocomplete*=current-password i]')]"
-                    ".map((input) => input.value).filter(Boolean)")
 HIDDEN = "(hidden)"
 BLANK_PAGE = "### Page\n- Page URL: about:blank\n"
 WEB_PAGE = "### Page\n- Page URL: http"
@@ -84,6 +87,10 @@ class BrowserClosedError(Exception):
     """The page turned blank in the middle of a task: the user closed the window."""
 
 
+class BrowserLostError(Exception):
+    """A browser call got no answer in time (a frozen page) or the browser server died. Agent.restart opens a new one."""
+
+
 class Conversation:
     """What both agents share: the memory at the start of a conversation, the first line of each task spoken at once,
     the user's words that arrive mid-task, and the task's steps for a quick spoken reply about it."""
@@ -92,12 +99,16 @@ class Conversation:
         self._memory, self._narrate = memory, narrate
         self._messages: list[dict] = []
         self._heard: list[str] = []
+        self._thinking: asyncio.Future[Message] | None = None
         self.task = ""
         self.steps: list[str] = []
 
     def tell(self, words: str) -> None:
-        """Hand the running task words the user said mid-task; it reads them before its next step."""
+        """Hand the running task words the user said mid-task. A step the model is still writing is dropped so it reads
+        them at once; an action already under way finishes first."""
         self._heard.append(words)
+        if self._thinking and not self._thinking.done():
+            self._thinking.cancel()
 
     def untold(self) -> list[str]:
         """Words told after the task's last step, which it never read."""
@@ -119,6 +130,18 @@ class Conversation:
                 self.steps.append(SAID_STEP.format(text=block.text.strip()))
             elif block.type == "tool_use":
                 self.steps.append(f"{block.name} {json.dumps(block.input)[:STEP_CHARACTERS]}")
+
+    async def _step(self, request: Awaitable[Message]) -> Message | None:
+        """The model's next reply, or None when the user spoke while it was being written and their words were added to
+        the history in its place."""
+        self._thinking = asyncio.ensure_future(request)
+        try:
+            return await self._thinking
+        except asyncio.CancelledError:
+            if asyncio.current_task().cancelling():  # a stop, not tell()
+                raise
+        self._messages.append({"role": "user", "content": self._heard_blocks()})
+        return None
 
     def _heard_blocks(self) -> list[dict]:
         blocks = [{"type": "text", "text": USER_SAID.format(words=words)} for words in self._heard]
@@ -163,20 +186,30 @@ class Agent(Conversation):
 
     async def __aenter__(self) -> "Agent":
         try:
-            read, write = await self._stack.enter_async_context(stdio_client(self._server))
-            self._browser = await self._stack.enter_async_context(ClientSession(read, write))
-            await self._browser.initialize()
-            listed = await self._browser.list_tools()
-            self._tools = [{"name": tool.name, "description": tool.description, "input_schema": tool.input_schema}
-                           for tool in listed.tools if tool.name in BROWSER_TOOLS] + [ASK_TOOL]
-            # The window opens now, not on the first command.
-            opened = await self._browser.call_tool("browser_tabs", {"action": "list"})
-            if opened.is_error:
-                raise BrowserStartError(_text(opened))
+            await self._open()
         except BaseException:  # Python skips __aexit__ when __aenter__ fails, and the open server would hang asyncio.run
             await self.__aexit__()
             raise
         return self
+
+    async def _open(self) -> None:
+        read, write = await self._stack.enter_async_context(stdio_client(self._server))
+        self._browser = await self._stack.enter_async_context(ClientSession(read, write))
+        await self._browser.initialize()
+        listed = await self._browser.list_tools()
+        self._tools = [{"name": tool.name, "description": tool.description, "input_schema": tool.input_schema}
+                       for tool in listed.tools if tool.name in BROWSER_TOOLS] + [ASK_TOOL]
+        # The window opens now, not on the first command.
+        opened = await self._browser.call_tool("browser_tabs", {"action": "list"})
+        if opened.is_error:
+            raise BrowserStartError(_text(opened))
+
+    async def restart(self) -> None:
+        """Close the browser server and its window and open new ones, after a BrowserLostError. Call it from the task that
+        entered the agent: the MCP client's task groups must be left by the task that entered them."""
+        await self._stack.aclose()
+        self._on_page = False
+        await self._open()
 
     async def __aexit__(self, *exc_info: object) -> None:
         await self._stack.aclose()
@@ -211,8 +244,11 @@ class Agent(Conversation):
             asked = f"{command}\n\n{in_front}{NOW.format(now=datetime.now())}\n\n{PAGE_NOW}"
             self._messages.append(self._opening(command, [{"type": "text", "text": asked}, self._page_block(snapshot)]))
             for _ in range(MAX_STEPS):
-                reply = await self._anthropic.messages.create(model=self._model, max_tokens=MAX_TOKENS, system=self._system,
-                                                              tools=self._tools, messages=self._messages, cache_control=CACHED)
+                reply = await self._step(self._anthropic.messages.create(
+                    model=self._model, max_tokens=MAX_TOKENS, system=self._system, tools=self._tools,
+                    messages=self._messages, cache_control=CACHED))
+                if reply is None:
+                    continue
                 if reply.stop_reason != "tool_use":
                     if (answer := self._finished(reply)) is not None:
                         return answer
@@ -299,7 +335,13 @@ class Agent(Conversation):
         return json.loads(result[1]) if result else {"kind": UNREADABLE, "label": output}  # stale ref, open dialog
 
     async def _call(self, tool: str, arguments: dict) -> str:
-        text = _text(await self._browser.call_tool(tool, arguments, read_timeout_seconds=BROWSER_CALL_TIMEOUT_SECONDS))
+        try:
+            result = await self._browser.call_tool(tool, arguments, read_timeout_seconds=BROWSER_CALL_TIMEOUT_SECONDS)
+        except MCPError as error:
+            if error.code in LOST_BROWSER_CODES:
+                raise BrowserLostError(error.message) from error
+            raise
+        text = _text(result)
         self._on_page = self._on_page or WEB_PAGE in text  # a navigation result counts: a session's first snapshot is blank
         return text
 

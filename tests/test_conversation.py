@@ -17,7 +17,8 @@ import memory
 import menubar
 import mouth
 import side
-from agent import SAID_STEP, USER_SAID
+from agent import INTERRUPTED, SAID_STEP, USER_SAID
+from gate import url_refusal
 from memory import Memory
 
 NEVER_SENT = "never sent: these tests make no API request"
@@ -25,6 +26,9 @@ NOTES = "My name is Sam. Keep replies short."
 PNG = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")
 PDF = b"%PDF-1.4\n%%EOF\n"
 SCREEN = [{"type": "text", "text": "a screenshot"}]
+SLOW_STEP_SECONDS = 30  # a model step that only ends when it is dropped
+STEP_WAIT_SECONDS = 1
+LINKEDIN_JOB = "https://www.linkedin.com/jobs/view/41"
 
 
 def reply(stop_reason: str, *content: dict) -> Message:
@@ -209,6 +213,63 @@ def test_words_that_arrive_as_the_task_finishes_carry_it_on(remembered: Memory) 
     answer = asyncio.run(driver.run("open Notes"))
     assert answer == "Added it.", f"the user's late words were dropped and it said {answer!r}"
     assert driver._anthropic.requests[1]["messages"][-1]["content"] == [text(USER_SAID.format(words="and add milk"))]
+
+
+def writing_forever(driver: mac.MacAgent) -> asyncio.Event:
+    """Makes the driver's first model request hang until cancelled; later ones are scripted. Returns the event set once
+    that first request is being written."""
+    writing, scripted = asyncio.Event(), driver._anthropic.messages.create
+
+    async def create(**request: object) -> Message:
+        if not writing.is_set():
+            writing.set()
+            await asyncio.sleep(SLOW_STEP_SECONDS)
+        return await scripted(**request)
+
+    driver._anthropic.messages.create = create
+    return writing
+
+
+def test_words_said_while_the_model_writes_a_step_drop_that_step_and_reach_the_model_at_once(remembered: Memory) -> None:
+    driver = mac.MacAgent(NEVER_SENT, remembered, "prompt", lambda question: None, lambda line: None)
+    driver._anthropic = ScriptedAnthropic(reply("end_turn", text("Opened Gmail.")))
+    writing = writing_forever(driver)
+
+    async def scenario() -> str:
+        task = asyncio.create_task(driver.run("open Outlook"))
+        await writing.wait()
+        driver.tell("use Gmail instead")
+        return await asyncio.wait_for(task, STEP_WAIT_SECONDS)
+
+    answer = asyncio.run(scenario())
+    sent = driver._anthropic.requests
+    assert answer == "Opened Gmail.", answer
+    assert len(sent) == 1 and sent[0]["messages"][-1]["content"] == [text(USER_SAID.format(words="use Gmail instead"))], sent
+
+
+def test_a_stop_while_the_model_writes_a_step_ends_the_task(remembered: Memory) -> None:
+    driver = mac.MacAgent(NEVER_SENT, remembered, "prompt", lambda question: None, lambda line: None)
+    driver._anthropic = ScriptedAnthropic()
+    writing = writing_forever(driver)
+
+    async def scenario() -> bool:
+        task = asyncio.create_task(driver.run("open Outlook"))
+        await writing.wait()
+        task.cancel()
+        await asyncio.wait({task}, timeout=STEP_WAIT_SECONDS)
+        return task.cancelled()
+
+    assert asyncio.run(scenario()), "a stop was taken for words said mid-task"
+    assert driver._messages[-1] == {"role": "user", "content": INTERRUPTED}, driver._messages[-1]
+
+
+@pytest.mark.parametrize("blocked_hosts", [[], ["bank.example"]], ids=["the default config", "a config that blocks others"])
+def test_linkedin_is_blocked_whatever_the_config_blocks(tmp_path: Path, blocked_hosts: list[str]) -> None:
+    config = main.Config(profile_dir=str(tmp_path / "profile"), blocked_hosts=blocked_hosts)
+    driver = main.build_agent(config, main.WINDOW, SimpleNamespace(say_later=print),
+                              Memory(tmp_path / "memory.md", tmp_path / "memory"))
+    assert url_refusal(LINKEDIN_JOB, driver._blocked_hosts), f"{LINKEDIN_JOB} opens with {driver._blocked_hosts}"
+    assert set(blocked_hosts) <= driver._blocked_hosts, driver._blocked_hosts
 
 
 def stream(handler, service: str = "elevenlabs", voice: str = "voice-id", model: str = "eleven_v4_turbo") -> mouth.Mouth:
