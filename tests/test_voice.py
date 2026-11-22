@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import conftest
 import fake_microphone
 import main
 import mouth
@@ -22,6 +23,7 @@ SILENCE_SECONDS = 1.0
 SCHEDULING_SLACK_SECONDS = 0.3
 LINE_END_SECONDS = 2  # Moonshine closes a line 0.5 to 0.9 s after the speech ends
 HALF_SENTENCE_SECONDS = 1.6  # cuts the wakecmd clip off after "Hey Jarvis, go to"
+LONG_PAUSE_MILLISECONDS = 1800  # well past the second that cut a command off before, inside the unfinished-line wait
 JUST_AFTER_SECONDS = 0.1
 DEADLINE_INSIDE_SPEECH_SECONDS = 1.5  # the wakecmd clip is still being spoken at this point
 REPLY_DELAY_SECONDS = 0.3  # a quick human answer, after the shortened echo tail
@@ -211,6 +213,40 @@ def test_is_stop_only_when_the_whole_utterance_says_stop(transcript, stops):
 ])
 def test_is_dismissal_only_when_the_whole_utterance_declines(transcript, dismisses):
     assert is_dismissal(transcript, NAMES) is dismisses, f"{transcript!r} gave {is_dismissal(transcript, NAMES)!r}"
+
+
+@pytest.mark.parametrize("transcript, unfinished", [
+    ("Hey Jarvis, go to", True),
+    ("Hey Jarvis, go to.", True),  # the recogniser's period after a pause
+    ("Open my email and", True),
+    ("Search for the", True),
+    ("Book a table for two,", True),
+    ("Play something by...", True),
+    ("Hey Jarvis, go to YouTube.", False),
+    ("Hey Jarvis.", False),
+    ("Yes", False),
+    ("Stop.", False),
+    ("What time is it?", False),
+    ("", False),
+])
+def test_is_unfinished_only_when_the_line_stops_mid_clause(transcript, unfinished):
+    assert voice.is_unfinished(transcript) is unfinished, f"{transcript!r} gave {voice.is_unfinished(transcript)!r}"
+
+
+@pytest.mark.parametrize("heard, spoken, barges", [
+    ("Hey Jarvis, stop.", "Here are the top results for lo-fi beats on YouTube.", True),
+    ("Stop.", "The page is loading now.", True),
+    ("Jarvis, open my email instead.", "I found three flights to Boston.", True),
+    ("Hey Jarvis, go to YouTube.", "Hey Jarvis, go to YouTube and search for lo-fi beats.", False),
+    ("Stop.", "Okay, I'll stop the video. Stop.", False),
+    ("I'm Jarvis, what's up?", "Hi, I'm Jarvis, what's up?", False),
+    ("Thanks.", "You're welcome.", False),
+    ("Open my email", "Done.", False),
+    ("", "Done.", False),
+])
+def test_only_a_wake_or_stop_that_is_not_the_spoken_line_barges_in(heard, spoken, barges):
+    verdict = voice.barges_in(heard, spoken, NAMES)
+    assert verdict is barges, f"{heard!r} while saying {spoken!r} gave {verdict!r}"
 
 
 @pytest.mark.parametrize("heard, stops", [
@@ -408,6 +444,21 @@ def test_a_pause_mid_command_splits_the_transcript_and_hear_whole_joins_it(ears,
     assert "youtube" in whole.lower() and "search" in whole.lower(), f"{first!r} was joined into {whole!r}"
 
 
+def test_a_long_pause_after_an_unfinished_clause_is_waited_out(ears, run, tmp_path):
+    path = tmp_path / "pause_after_for.wav"
+    conftest._synthesize(f"Hey Jarvis, search for [[slnc {LONG_PAUSE_MILLISECONDS}]] lo-fi beats.", path)
+    fake_microphone.pending.append(fake_microphone.clip(path))
+
+    async def scenario() -> str | None:
+        return await main.hear_whole(ears, await ears.hear(HEAR_SECONDS))
+
+    try:
+        text = run(scenario())
+    finally:
+        fake_microphone.pending.clear()
+    assert text and re.search(r"\bfor\W+\w", text, re.IGNORECASE), f"the pause cut the command to {text!r}"
+
+
 def test_no_continuation_costs_only_the_grace(ears, run):
     started = time.perf_counter()
     whole = run(main.hear_whole(ears, "open the first one"))
@@ -513,6 +564,38 @@ def test_the_key_cuts_off_what_beacon_is_saying(ears, run, monkeypatch):
 
     took = run(scenario())
     assert took < CUT_OFF_SECONDS + SCHEDULING_SLACK_SECONDS, f"say ran for {took:.2f} s after the key was pressed"
+
+
+def test_the_name_and_stop_while_beacon_speaks_cut_it_off_and_reach_the_next_listener(ears, run, user_says, monkeypatch):
+    monkeypatch.setattr(MOUTH, "seconds", LONG_LINE_SECONDS * 2)
+
+    async def scenario() -> tuple[float, Heard | None]:
+        started = time.perf_counter()
+        speaking = asyncio.create_task(ears.say("Here are the top results for lo-fi beats, the most watched one first."))
+        await asyncio.sleep(CUT_OFF_SECONDS)
+        user_says("wakestop")
+        await speaking
+        took = time.perf_counter() - started
+        return took, await ears.hear(SILENCE_SECONDS)
+
+    took, heard_next = run(scenario())
+    assert took < LONG_LINE_SECONDS * 2, f"say ran its whole {took:.2f} s through the barge-in"
+    assert heard_next and is_stop(heard_next, NAMES), f"the next listener got {heard_next!r}"
+
+
+def test_beacon_hearing_its_own_line_does_not_cut_it_off_or_reach_a_listener(ears, run, user_says, monkeypatch):
+    monkeypatch.setattr(MOUTH, "seconds", LONG_LINE_SECONDS * 2)
+
+    async def scenario() -> tuple[float, Heard | None]:
+        started = time.perf_counter()
+        user_says("wakecmd")  # the speakers playing the line back into the microphone
+        await ears.say(conftest.CLIPS["wakecmd"])
+        took = time.perf_counter() - started
+        return took, await ears.hear(SILENCE_SECONDS)
+
+    took, heard_next = run(scenario())
+    assert took >= LONG_LINE_SECONDS * 2, f"its own echo cut the line off after {took:.2f} s"
+    assert heard_next is None, f"its own echo reached the next listener as {heard_next!r}"
 
 
 def test_the_recogniser_is_restarted_so_it_does_not_keep_every_line_it_ever_heard(ears, heard):
