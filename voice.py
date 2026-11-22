@@ -30,6 +30,12 @@ STOP_WORD = "(stop|cancel|abort|never ?mind)"
 STOP = rf"((no|please|okay|hey|wait) )*{STOP_WORD}( (it|that|this|please|right|now|everything|{STOP_WORD}))*"
 DISMISS = (rf"{STOP}|(okay |great |no |hey )*(no|nope|thanks?( you)?( a lot| so much| very much)?"
            rf"|that('s| is) (all|it)|nothing( else)?|(good ?)?bye)")
+# A line that stops on one of these, or on a comma, is cut off mid-clause: something must follow it.
+TRAILING_WORDS = ("and", "or", "but", "so", "then", "to", "the", "a", "an", "my", "your", "of", "for", "with", "in", "on",
+                  "at", "from", "by", "into", "about")
+TRAILING_MARKS = (",", ":", ";", "...", "…")
+UNFINISHED_PAUSE_SECONDS = 2.0  # how long such a line waits for the rest; a finished one is handed on at once
+ECHO_OVERLAP = 0.6  # the share of a line heard while speaking that matches the spoken line, at which it is its echo
 READY, HEARING, WORKING, SPEAKING = "ready", "hearing", "working", "speaking"  # Ears.activity, shown in the menu bar
 
 
@@ -87,6 +93,27 @@ def is_dismissal(transcript: str, names: tuple[str, ...] = ()) -> bool:
     return re.fullmatch(DISMISS, _plain(transcript, names)) is not None
 
 
+def is_unfinished(transcript: str) -> bool:
+    """True when a line stops mid-clause, on a comma or a word such as "and" or "to"; a closing period is ignored, since
+    the recogniser may put one at any pause."""
+    words = _plain(transcript).split()
+    return transcript.rstrip().endswith(TRAILING_MARKS) or bool(words) and words[-1] in TRAILING_WORDS
+
+
+def is_echo(transcript: str, spoken: str) -> bool:
+    """True when most of a line heard while Beacon speaks is the spoken line itself, coming back through the microphone:
+    macOS gives sounddevice no echo cancelling."""
+    heard = _plain(transcript).split()
+    matched = sum(block.size for block in SequenceMatcher(None, heard, _plain(spoken).split()).get_matching_blocks())
+    return not heard or matched >= ECHO_OVERLAP * len(heard)
+
+
+def barges_in(transcript: str, spoken: str, names: tuple[str, ...]) -> bool:
+    """A line heard while Beacon speaks cuts it off only when it wakes or stops it and is not its own words."""
+    wakes_or_stops = wake_command(transcript, names) is not None or is_stop(transcript, names)
+    return wakes_or_stops and not is_echo(transcript, spoken)
+
+
 class Heard(str):
     """An utterance; pushed is True when it was spoken with the push-to-talk key held, so it is meant for Beacon."""
 
@@ -99,13 +126,15 @@ class Heard(str):
 
 
 class Ears:
-    """Microphone to finished utterances, and speech out with the microphone paused (half-duplex).
+    """Microphone to finished utterances, and speech out. While Beacon speaks the microphone stays open, but only a wake
+    or a stop that is not its own echo gets through: it cuts the speech off and goes to the next listener.
 
     The microphone is open while the wake word is on, while the push-to-talk key is held, and while someone waits for
     an answer with a deadline (a question, the follow-up window). Otherwise it is closed and macOS shows it unused."""
 
     def __init__(self, stt_model: str, keyterms: list[str], mouth: Mouth, wake: bool) -> None:
         self._keyterms, self._mouth, self._wake = keyterms, mouth, wake
+        self._names = tuple(keyterms)
         self.working = False  # set by the conversation while a task runs; only shown in the menu bar
         self._waiters: list[asyncio.Future[Heard]] = []
         self._expecting = 0  # waiters with a deadline: Beacon expects an answer, so the microphone opens for it
@@ -115,6 +144,10 @@ class Ears:
         self._speech: asyncio.Task | None = None  # the line being spoken, which the push-to-talk key cuts off
         self._later: set[asyncio.Task] = set()  # lines queued by say_later
         self._talking = False
+        self._spoken = ""  # the line being spoken, to tell its echo from the user
+        self._barged: Heard | None = None  # a barge-in nobody was listening for yet, kept for the next hear
+        self._unfinished = ""  # a line that stopped mid-clause, waiting for the rest
+        self._unfinished_timer: asyncio.TimerHandle | None = None
         self._pushing = False
         self._held: list[str] = []  # the lines of the current push, delivered together on release
         self._running = False  # the recogniser and the audio device, which are opened and closed together
@@ -159,11 +192,10 @@ class Ears:
         everything said meanwhile as one utterance."""
         if down == self._pushing:
             return  # key repeat
-        if self._running:  # stopping flushes the phrase in progress, so what came before the press stays apart
-            self._mic.stop()
-            self._mic.start()
+        self._flush()  # what came before the press stays apart
         self._pushing = down
         if down:
+            self._barged = None
             self.hush()
             self._held.clear()
             self._quiet.clear()
@@ -176,8 +208,15 @@ class Ears:
         for task in [*self._later, *filter(None, [self._speech])]:
             task.cancel()
 
+    def _flush(self) -> None:
+        """Deliver the phrase in progress, then any line still held for its rest, as they are."""
+        if self._running:
+            self._mic.stop()
+            self._mic.start()
+        self._loop.call_soon(self._hand_unfinished)  # after the lines the stop above delivered
+
     def _want_microphone(self) -> bool:
-        return not self._talking and (self._wake or self._pushing or self._expecting > 0)
+        return self._wake or self._pushing or self._expecting > 0
 
     def _refresh(self, linger: bool = False) -> None:
         """Open or close the microphone to match what is wanted now. With linger, closing waits a moment, so a window
@@ -203,38 +242,71 @@ class Ears:
 
     def _on_event(self, event: TranscriptEvent) -> None:  # transcriber thread, or this loop's during stop()
         if isinstance(event, LineStarted):
-            self._loop.call_soon_threadsafe(self._quiet.clear)
+            self._loop.call_soon_threadsafe(self._line_started)
         elif isinstance(event, LineCompleted):
-            self._loop.call_soon_threadsafe(self._deliver, event.line.text.strip(), self._pushing)
+            self._loop.call_soon_threadsafe(self._deliver, event.line.text.strip(), self._pushing, self._talking)
 
-    def _deliver(self, text: str, pushed: bool) -> None:
+    def _line_started(self) -> None:
+        self._quiet.clear()
+        if self._unfinished_timer:  # the rest is coming
+            self._unfinished_timer.cancel()
+            self._unfinished_timer = None
+
+    def _deliver(self, text: str, pushed: bool, talking: bool) -> None:
         if pushed:
             self._held.append(text)
             return
-        self._quiet.set()
         self._lines_kept += 1
         if self._lines_kept >= RESTART_AFTER_LINES and self._running and not self._pushing:
             # Hours of background sound would otherwise grow memory and processor use without limit.
             self._lines_kept = 0
             self._mic.stop()
             self._mic.start()
+        if talking:
+            self._quiet.set()
+            if barges_in(text, self._spoken, self._names):
+                self.hush()
+                if not self._hand(Heard(text)):
+                    self._barged = Heard(text)
+            return
+        text = f"{self._unfinished} {text}".strip()
+        self._unfinished = ""
+        if is_unfinished(text) and not self._talking and not self._pushing:
+            self._unfinished = text  # the quiet stays cleared, so hear and say wait for the rest
+            self._unfinished_timer = self._loop.call_later(UNFINISHED_PAUSE_SECONDS, self._hand_unfinished)
+            return
+        self._quiet.set()
         self._hand(Heard(text))
+
+    def _hand_unfinished(self) -> None:
+        if self._unfinished_timer:
+            self._unfinished_timer.cancel()
+            self._unfinished_timer = None
+        if self._unfinished:
+            text, self._unfinished = self._unfinished, ""
+            self._quiet.set()
+            self._hand(Heard(text))
 
     def _release(self) -> None:
         if not self._pushing:  # pressed again before this ran: those lines belong to the new push
             self._quiet.set()
             self._hand(Heard(" ".join(filter(None, self._held)), pushed=True))
 
-    def _hand(self, heard: Heard) -> None:
+    def _hand(self, heard: Heard) -> bool:
         # The newest listener wins, so a question asked mid-task outranks the stop watcher.
         for waiter in reversed(self._waiters):
             if heard and not waiter.done():
                 waiter.set_result(heard)
-                return
+                return True
+        return False
 
     async def hear(self, timeout: float | None = None) -> Heard | None:
         """The next finished utterance, or None if nobody starts speaking within timeout seconds. A deadline means
-        Beacon expects an answer, so the microphone opens for it even with the wake word off."""
+        Beacon expects an answer, so the microphone opens for it even with the wake word off. A barge-in that cut off a
+        line while nobody was listening comes first."""
+        if self._barged:
+            heard, self._barged = self._barged, None
+            return heard
         waiter = self._loop.create_future()
         self._waiters.append(waiter)
         if timeout is not None:
@@ -253,14 +325,14 @@ class Ears:
                 self._refresh(linger=True)
 
     async def say(self, text: str) -> None:
-        """Speak one line with the microphone closed. The push-to-talk key cuts it off; then say returns early."""
+        """Speak one line. The push-to-talk key, the wake word or a stop cuts it off; then say returns early."""
         async with self._voice:
             with contextlib.suppress(TimeoutError):  # still talking after the wait: speak anyway, unless the key is held
                 await asyncio.wait_for(self._quiet.wait(), None if self._pushing else QUIET_WAIT_SECONDS)
-            # Closing the microphone flushes the phrase in progress to whoever is listening now, so it cannot be stitched
-            # onto the answer to this line. Measured 4-100 ms, so it runs on the loop: a cancelled thread could not be undone.
-            self._talking = True
-            self._refresh()
+            # Flushing delivers the phrase in progress to whoever is listening now, so it cannot be stitched onto the
+            # answer to this line. Measured 4-100 ms, so it runs on the loop: a cancelled thread could not be undone.
+            self._flush()
+            self._talking, self._spoken = True, text
             speech = self._speech = asyncio.ensure_future(self._mouth.speak(text))
             try:
                 await asyncio.wait({speech})
@@ -269,11 +341,13 @@ class Ears:
                     await asyncio.sleep(ECHO_TAIL_SECONDS)
             finally:
                 speech.cancel()
-                await asyncio.wait({speech})  # lets the speakers or `say` close before the microphone reopens
+                await asyncio.wait({speech})  # lets the speakers or `say` close
+                if self._running:  # the echo still in the recogniser is delivered as heard while talking, so it is filtered
+                    self._mic.stop()
+                    self._mic.start()
                 self._speech = None
                 self._talking = False
                 self._quiet.set()
-                self._refresh()
 
     def say_later(self, text: str) -> None:
         """Speak a line without waiting for it, after anything already being said; hush drops it."""

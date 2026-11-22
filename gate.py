@@ -1,15 +1,22 @@
-"""What needs a spoken yes. Pure rules over facts read from the live DOM by inspect.js: no I/O, no model."""
+"""What needs a spoken yes. Pure rules over facts read from the live DOM by inspect.js, no model; the only I/O is
+url_refusal looking a site name up."""
 import ipaddress
 import re
 import socket
+from concurrent.futures import ThreadPoolExecutor
 from typing import Literal, NamedTuple
 
 IRREVERSIBLE = re.compile(
     r"\b(submit|send|pay|buy|purchase|place (your |my |the )?order|order now|check[ -]?out|delete|remove|confirm|post|publish"
     r"|book|reserve|subscribe|unsubscribe|donate|transfer|withdraw|sign[ -]?up|register|accept|agree"
+    r"|create (an |my |your )?account|start (my |your )?(free )?trial|upgrade|renew"
     r"|cancel (my|your|subscription|order|booking|reservation))\b", re.IGNORECASE)
 # On a form's own button these words send it; anywhere else they only open one.
-FORM_SUBMIT_ONLY = re.compile(r"\b(apply|complete|order|payment|booking)\b", re.IGNORECASE)
+FORM_SUBMIT_ONLY = re.compile(r"\b(apply|complete|finish|order|payment|booking)\b", re.IGNORECASE)
+# Signs in the page title, address or the form around a button that the step spends money, whatever the button says.
+PURCHASE = re.compile(r"\b(check[ -]?out|payment|billing|order (total|summary)|place (your |my |the )?order|(total|amount) due"
+                      r"|card ?number|cc-(number|csc|exp)|cvv|cvc)\b", re.IGNORECASE)
+CONSENT = re.compile(r"\b(agree|accept|consent|terms|conditions|subscribe|newsletter|opt[ -]?in|authori[sz]e)", re.IGNORECASE)
 # The server prints the message raw, so it may span lines; the first line that opens a dialog is the server's own.
 DIALOG = re.compile(r'^- \["(?P<kind>\w+)" dialog with message "(?P<message>.*)"\]: can be handled by browser_handle_dialog',
                     re.MULTILINE | re.DOTALL)
@@ -26,6 +33,11 @@ SECRET_REFUSAL = ("That is a password, card or verification-code field. Never fi
 FILE_REFUSAL = "Saving results to a file is not allowed. Call the tool again without filename."
 SLOWLY_REFUSAL = ("Typing slowly is not allowed. Type without slowly; if a suggestion list should open, "
                   "press ArrowDown afterwards.")
+PRIVATE_REFUSAL = "Private and loopback addresses are blocked."
+RESOLVE_TIMEOUT_SECONDS = 2
+UNRESOLVED_REFUSAL = "That site name could not be looked up in time, so it cannot be checked."
+# A lookup that hangs keeps its thread; the next lookups still get threads of their own.
+RESOLVER = ThreadPoolExecutor(thread_name_prefix="resolve")
 FRAME_REFUSAL = ("Focus is inside an embedded frame that cannot be checked. Use browser_type on a field there, or click "
                  "the control you want.")
 
@@ -50,8 +62,27 @@ def url_refusal(url: str, blocked_hosts: frozenset[str]) -> str | None:
     try:
         address = ipaddress.ip_address(socket.inet_aton(host))  # also reads 127.1 and 2130706433, as Chrome does
     except OSError:  # a name, unless it ends like a number: Chrome reads "0x" as 0 and inet_aton does not
-        return "That is not a valid web address." if host.rpartition(".")[2][0].isdigit() else None
-    return None if address.is_global else "Private and loopback addresses are blocked."
+        if host.rpartition(".")[2][0].isdigit():
+            return "That is not a valid web address."
+        try:
+            addresses = RESOLVER.submit(_resolve, host).result(timeout=RESOLVE_TIMEOUT_SECONDS)
+        except TimeoutError:
+            return UNRESOLVED_REFUSAL
+        # shortcut: Chrome looks the name up again, so a site that answers differently the second time is not caught
+        return PRIVATE_REFUSAL if any(not _unmapped(found).is_global for found in addresses) else None
+    return None if address.is_global else PRIVATE_REFUSAL
+
+
+def _resolve(host: str) -> list[ipaddress.IPv4Address | ipaddress.IPv6Address]:
+    """Every address host resolves to; none when it does not resolve, which Chrome then reports itself."""
+    try:
+        return [ipaddress.ip_address(info[4][0]) for info in socket.getaddrinfo(host, None)]
+    except socket.gaierror:
+        return []
+
+
+def _unmapped(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> ipaddress.IPv4Address | ipaddress.IPv6Address:
+    return getattr(address, "ipv4_mapped", None) or address  # ::ffff:127.0.0.1 is loopback, which is_global misses
 
 
 def to_inspect(tool: str, arguments: dict) -> list[str | None]:
@@ -77,10 +108,17 @@ def _ask(action: str, fact: dict) -> Verdict:
     return Verdict("ask", f"Ready to {action} on {fact['host'] or 'this page'}{carried}. Say yes to go ahead, or no to cancel.")
 
 
+def _purchase(fact: dict) -> bool:
+    return bool(PURCHASE.search(fact["page"]) or PURCHASE.search(fact["form"]))
+
+
 def _click(fact: dict) -> Verdict:
     kind, label = fact["kind"], fact["label"]
+    if kind == "toggle":
+        return _ask(f"tick {_spoken(label)}", fact) if CONSENT.search(label) else ALLOW
     is_title = kind in ("link", "other") and len(label.split()) > SHORT_LABEL_WORDS
-    asks = IRREVERSIBLE.search(label) or fact["submits"] and FORM_SUBMIT_ONLY.search(label) or kind == "button" and not label
+    asks = (IRREVERSIBLE.search(label) or fact["submits"] and FORM_SUBMIT_ONLY.search(label)
+            or kind == "button" and (not label or _purchase(fact)))
     if kind in ("button", "link", "other") and not is_title and asks:
         return _ask(f"press {_spoken(label) or 'this button'}", fact)
     return ALLOW
@@ -90,6 +128,11 @@ def _press(key: str, fact: dict) -> Verdict:
     if fact["kind"] == "frame":  # focus is inside a frame this page may not read: fail closed
         return _ask(f"press {key} in an embedded form", fact)
     if fact["kind"] in ("field", "toggle") and key in ENTER_KEYS:  # Enter on a checkbox or radio submits its form too
+        field = _spoken(fact["label"]) if fact["kind"] == "field" else ""
+        return _ask(f"press Enter in {field or 'this form'}", fact)
+    # Enter in a search box submits the form it sits in, which may be a longer one that sends something
+    if fact["kind"] == "search" and key in ENTER_KEYS and (
+            _purchase(fact) or IRREVERSIBLE.search(fact["form"]) or FORM_SUBMIT_ONLY.search(fact["form"])):
         return _ask(f"press Enter in {_spoken(fact['label']) or 'this form'}", fact)
     return _click(fact)
 

@@ -1,4 +1,4 @@
-"""The menu bar bird: what Beacon is doing, the push-to-talk key, the wake word switch, memory, what it works in, on/off and
+"""The menu bar mark: what Beacon is doing, the push-to-talk key, the wake word switch, memory, what it works in, on/off and
 quit. A native helper (menubar.swift) shows it and holds the key; this file runs the assistant on a second thread, acts on
 what the helper reports, and keeps the menu's choices in settings.json."""
 import asyncio
@@ -14,7 +14,7 @@ import main
 from voice import Ears
 
 SOURCE = Path(__file__).with_name("menubar.swift")
-ICON = Path(__file__).with_name("bird.png")
+ICON = Path(__file__).with_name("mark.png")
 HELPER = main.HOME / "menubar"
 SETTINGS = main.HOME / "settings.json"
 STARTING, OFF = "starting", "off"  # the other states are voice.Ears.activity; menubar.swift knows them all

@@ -11,7 +11,7 @@ import anthropic
 import sounddevice
 from mcp import MCPError
 
-from agent import Agent, BrowserClosedError, BrowserStartError
+from agent import Agent, BrowserClosedError, BrowserLostError, BrowserStartError
 from mac import MacAgent, MacPermissionError
 from memory import Memory
 from mouth import SERVICES, SPEAKING_STYLE, Mouth
@@ -28,6 +28,7 @@ CONFIRM_SECONDS = 8
 CONFIRM_ATTEMPTS = 2
 ASK_SECONDS = 180
 FORGET_AFTER_SECONDS = 600
+ALWAYS_BLOCKED_HOSTS = frozenset({"linkedin.com"})  # its terms forbid automating it; added to any blocked_hosts in the config
 STOPPED = "Stopped."
 CONFIRM_RETRY = "Sorry, yes or no?"
 CRASHED = "Something broke and I have to quit. The details are in the terminal."
@@ -40,6 +41,7 @@ SPOKEN_ERRORS: dict[type[Exception], str] = {  # most specific first
     anthropic.APIStatusError: "Anthropic returned an error, so I stopped.",
     BrowserClosedError: "The browser window was closed, so I stopped.",
     BrowserStartError: "I couldn't open Chrome. The reason is in the terminal.",
+    BrowserLostError: "The browser stopped responding, so I stopped and restarted it.",
     MCPError: "The browser stopped responding, so I stopped.",
     MacPermissionError: "I need permission to see and control the screen. The steps are in the terminal.",
     MicrophoneSilentError: NO_MICROPHONE,
@@ -182,10 +184,12 @@ async def carry_out(agent: Agent | MacAgent, ears: Ears, side: Side, command: st
         if asyncio.current_task().cancelling():  # Ctrl-C cancels this task, a spoken stop only the work
             raise
         return (stopped[0] if stopped else STOPPED), None
-    except MCPError:  # the server is gone for good: main() says so once and quits
+    except MCPError:  # any other browser server failure: main() says so once and quits
         raise
     except tuple(SPOKEN_ERRORS) as error:
         print(repr(error), file=sys.stderr)
+        if isinstance(error, BrowserLostError):
+            await agent.restart()  # here, in the conversation's task, which entered the agent
         return spoken_error(error), None
     finally:
         ears.working = False
@@ -237,7 +241,7 @@ def build_agent(config: Config, mode: str, ears: Ears, memory: Memory, headless:
     asking = partial(ask, ears, names=config.names)
     if mode == MAC:
         return MacAgent(config.model, memory, prompt, asking, ears.say_later)
-    return Agent(config.model, profile_dir, memory, prompt, frozenset(config.blocked_hosts),
+    return Agent(config.model, profile_dir, memory, prompt, frozenset(config.blocked_hosts) | ALWAYS_BLOCKED_HOSTS,
                  partial(confirm, ears, names=config.names), asking, ears.say_later, headless,
                  config.extension_token if mode == CHROME else "")
 
@@ -249,13 +253,13 @@ async def main(started: Callable[[Ears], None] = lambda ears: None, mode: str = 
     memory = Memory(MEMORY_NOTES.resolve(), MEMORY_FOLDER.resolve())
     async with Mouth(config.voice_service, config.voice, config.voice_model, config.say_voice) as mouth:
         try:
-            async with (Ears(config.stt_model, [config.agent_name], mouth, wake) as ears,
+            async with (Ears(config.stt_model, list(config.names), mouth, wake) as ears,
                         build_agent(config, mode, ears, memory) as agent, Side(config.quick_model, config.agent_name) as side):
                 started(ears)
                 greeting, _ = await asyncio.gather(side.greet(memory.notes()), agent.warm_up())
                 await ears.say(greeting)
                 await converse(ears, agent, side, memory, config)
-        except tuple(SPOKEN_ERRORS) as error:  # startup failures and a dead browser server; carry_out speaks the rest
+        except tuple(SPOKEN_ERRORS) as error:  # startup failures and a browser lost between commands; carry_out speaks the rest
             await mouth.speak(spoken_error(error))
             raise SystemExit(repr(error)) from error  # a string code is printed to the terminal and exits with status 1
         except Exception:

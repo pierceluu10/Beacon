@@ -1,0 +1,19 @@
+<!doctype html><title>Acme Store</title>
+<style>.trash::before { content: "Delete file" } .glyph::before { content: "\e900" }</style>
+<form onsubmit="event.preventDefault()"><p>Order total $49.00</p><button id="pay-next">Next</button></form>
+<form onsubmit="event.preventDefault()"><input name="nickname"><button id="save">Save</button></form>
+<form onsubmit="event.preventDefault()"><input id="school" placeholder="Search for your school"><button>Create account</button></form>
+<form role="search" onsubmit="event.preventDefault()"><input id="store" placeholder="Search stores"><button>Search</button></form>
+<button id="css" class="trash"></button>
+<button id="glyph" class="glyph"></button>
+<button id="emoji" title="Send">&#10148;</button>
+<button id="arrow">&#10148;</button>
+<input id="cvv" name="cvv">
+<input id="card" placeholder="Card number">
+<label>SSN <input id="ssn"></label>
+<input id="passcode" name="user_passcode">
+<input id="otp" inputmode="numeric" maxlength="6" aria-label="Enter the code we texted you">
+<input id="zip" inputmode="numeric" maxlength="5" aria-label="ZIP code">
+<input id="nickname" aria-label="Nickname">
+<label><input type="checkbox" id="terms"> I accept the terms of service</label>
+<label><input type="checkbox" id="dark"> Dark mode</label>
