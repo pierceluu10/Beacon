@@ -8,6 +8,12 @@
   <img src="https://img.shields.io/badge/macOS-Apple%20silicon-lightgrey" alt="macOS on Apple silicon">
   <img src="https://img.shields.io/badge/python-3.12-blue" alt="Python 3.12">
 </p>
+<p align="center">
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#configuration">Configuration</a> ·
+  <a href="#security">Security</a> ·
+  <a href="CONTRIBUTING.md">Contributing</a>
+</p>
 
 Beacon is a voice computer-use agent for macOS. Hold a key or say "Hey Beacon", say what you want, and it works
 on your screen with the real mouse and keyboard, in any app. Talk to it while it works: ask what it sees, change
@@ -23,13 +29,28 @@ You:    (holding ⌥Space) "Actually make it Saturday."
 Beacon: "Got it, Saturday."
 ```
 
-Speech recognition runs on this Mac. The paid services are the Anthropic API and, if you add a key, ElevenLabs or Cartesia.
+## Features
 
-## Run it
+- **Any app, real input**: screenshots plus the real mouse and keyboard, or a Chrome window it drives directly.
+- **Talk over it**: ask, redirect or stop mid-task; it listens while it works and while it speaks.
+- **Spoken yes before anything irreversible** in the browser modes, checked in code against the real page.
+- **Local speech recognition** with Moonshine; nothing you say leaves the Mac except the command text.
+- **Memory**: notes and files about you, read at the start of every conversation.
+- **Native menu bar item** with a push-to-talk key recorder and a wake-word switch.
+
+## Requirements
+
+- macOS on Apple silicon, with the Xcode command line tools (`xcode-select --install`)
+- Python 3.12 and [uv](https://docs.astral.sh/uv/)
+- An Anthropic API key; optionally an ElevenLabs key for a natural voice
+- Microphone, Screen Recording and Accessibility access for your terminal
+
+## Quick start
 
 ```bash
+git clone https://github.com/pierceluu10/Beacon.git && cd Beacon
 export ANTHROPIC_API_KEY=...       # if it is not already in your shell profile
-export ELEVENLABS_API_KEY=...      # optional: a natural voice instead of macOS `say` (see Voice for Cartesia)
+export ELEVENLABS_API_KEY=...      # optional: a natural voice instead of macOS `say`
 uv sync
 uv run python main.py
 ```
@@ -38,7 +59,9 @@ The first run asks for microphone access for your terminal, then Screen Recordin
 Settings, Privacy and Security). Allow them, quit and reopen the terminal, and start Beacon again. It greets you
 by name if your memory says who you are.
 
-## Talking to it
+## Usage
+
+### Talking to it
 
 - **Push to talk**: hold ⌥Space, speak, let go. Pressing it while Beacon talks cuts it off.
 - **"Hey Beacon"**: say the name and the command, or the name, wait for the chime, then speak. Works while it is
@@ -47,25 +70,20 @@ by name if your memory says who you are.
 After an answer you have 8 seconds to follow up without either. Mid-task you can **ask** ("what are you
 seeing?"), **redirect** ("make it Saturday") or **stop** ("stop", "never mind").
 
-## The menu bar
+### The menu bar
 
 The mark shows a microphone while it hears you, pulsing dots while it works, a waveform while it talks, and dims
 when off. The menu holds the wake-word switch, the push-to-talk key recorder, Memory, where it works (**My whole
 Mac**, **My Chrome** or **Separate Chrome window**), Turn Off and Quit. Choices are saved in
 `~/.beacon/settings.json`.
 
-## Memory
+### Memory
 
 **Memory…** opens notes (`~/.beacon/memory.md`: who you are, how you like things done) and files
 (`~/.beacon/memory/`: PDFs, images and text are read). Both go into each new conversation. In the browser modes the
 memory folder is the only place uploads come from. Never put passwords in memory.
 
-## Voice
-
-Set `ELEVENLABS_API_KEY` (default, voice "Vance") or `CARTESIA_API_KEY` with `voice_service = "cartesia"`.
-`voice` and `voice_model` pick another voice or model. Without a key, or if the key is rejected, it uses macOS `say`.
-
-## Where it works
+### Where it works
 
 - **Whole Mac** (default): screenshots plus the real mouse and keyboard, in any app, main display only. No spoken
   confirmation: it does what you ask, including sending and buying. Every step sends a screenshot to the
@@ -76,6 +94,30 @@ Set `ELEVENLABS_API_KEY` (default, voice "Vance") or `CARTESIA_API_KEY` with `vo
   [Playwright Extension](https://chromewebstore.google.com/detail/playwright-extension/mmlmfjhmonkocbjadbfplnigmagldckm),
   put its token in `~/.beacon/config.toml` as `extension_token`, and `chmod 600` that file. The token lets any program
   on this Mac attach to your Chrome, so rotate it if it leaks.
+
+### Voice
+
+With `ELEVENLABS_API_KEY` set it speaks with ElevenLabs (voice "Vance"); `voice` and `voice_model` in the config
+pick another voice or model. Without a key, or if the key is rejected, it uses macOS `say`.
+
+## Configuration
+
+Optional, in `~/.beacon/config.toml`. Unknown keys are an error. The menu's choices live in
+`~/.beacon/settings.json`, not here.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `agent_name` | `"Beacon"` | The wake name, one word. Any name works; no training. |
+| `wake_aliases` | `[]` | Other spellings the recogniser produces for your name. |
+| `model` | `"claude-opus-5-5"` | Any Anthropic model id. The tests run on the default; `claude-sonnet-5-5` was tried by hand on multi-step tasks. |
+| `quick_model` | `"claude-haiku-5-5"` | The greeting and the quick replies while a task runs. |
+| `profile_dir` | `"~/.beacon/chrome-profile"` | The agent's own Chrome profile. |
+| `blocked_hosts` | `[]` | Sites it may never navigate to, for example your bank. Links and redirects that land there are not checked. |
+| `stt_model` | `"MEDIUM_STREAMING"` | Or `"SMALL_STREAMING"` (less memory, slightly less accurate). |
+| `voice` | `""` | An ElevenLabs voice id; empty for "Vance". |
+| `voice_model` | `""` | An ElevenLabs model; empty for its default. |
+| `say_voice` | `"Samantha"` | The macOS voice without an ElevenLabs key; any voice from `say -v '?'`. |
+| `extension_token` | `""` | Set it to work in your own Chrome through the Playwright Extension (see above). |
 
 ## Security
 
@@ -101,33 +143,13 @@ trusting the model:
 - **Speech stays local.** Recognition runs on this Mac with Moonshine ([`voice.py`](voice.py)); API keys are read
   from the environment, never written to disk.
 
-## Configuration
-
-Optional, in `~/.beacon/config.toml`. Unknown keys are an error. The menu's choices live in
-`~/.beacon/settings.json`, not here.
-
-| Key | Default | Meaning |
-|---|---|---|
-| `agent_name` | `"Beacon"` | The wake name, one word. Any name works; no training. |
-| `wake_aliases` | `[]` | Other spellings the recogniser produces for your name. |
-| `model` | `"claude-opus-5-5"` | Any Anthropic model id. The tests run on the default; `claude-sonnet-5-5` was tried by hand on multi-step tasks. |
-| `quick_model` | `"claude-haiku-5-5"` | The greeting and the quick replies while a task runs. |
-| `profile_dir` | `"~/.beacon/chrome-profile"` | The agent's own Chrome profile. |
-| `blocked_hosts` | `[]` | Sites it may never navigate to, for example your bank. Links and redirects that land there are not checked. |
-| `stt_model` | `"MEDIUM_STREAMING"` | Or `"SMALL_STREAMING"` (less memory, slightly less accurate). |
-| `voice_service` | `"elevenlabs"` | Or `"cartesia"`. See [Voice](#voice). |
-| `voice` | `""` | A voice id from that service; empty for its default. |
-| `voice_model` | `""` | A model from that service; empty for its default. |
-| `say_voice` | `"Samantha"` | The macOS voice without a voice service key; any voice from `say -v '?'`. |
-| `extension_token` | `""` | Set it to work in your own Chrome through the Playwright Extension (see above). |
-
-## How it works
+## Architecture
 
 | File | Job |
 |---|---|
 | `main.py` | Configuration and the conversation loop, including listening while a task runs. |
 | `voice.py` | Moonshine speech-to-text on the microphone, push-to-talk, and wake / yes / no / stop parsing. |
-| `mouth.py` | Speech out: ElevenLabs or Cartesia streaming, or macOS `say` without a key. |
+| `mouth.py` | Speech out: ElevenLabs streaming, or macOS `say` without a key. |
 | `side.py` | The fast model behind the greeting and the quick replies mid-task. |
 | `memory.py` | Turns your notes and memory files into the first message of a conversation. |
 | `agent.py` | Claude driving Chrome through the Playwright MCP server. |
@@ -139,16 +161,7 @@ Optional, in `~/.beacon/config.toml`. Unknown keys are an error. The menu's choi
 | `mac.py`, `mac_prompt.txt` | The whole-Mac mode: screenshots, mouse and keyboard through Anthropic's computer toolset. |
 | `prompt.txt` | The system prompt for the browser modes. |
 
-## Tests
-
-```bash
-uv run pytest                 # gate rules, real speech recognition on synthesized clips, real headless Chrome
-RUN_LIVE=1 uv run pytest      # adds the live Claude and YouTube runs (a few cents)
-```
-
-No test needs a microphone or a person: clips are made with `say` and fed through a fake input device.
-
-## Limits
+## Known limitations
 
 - The whole-Mac mode has no gate: it asks nothing before acting. Stop it by voice or the key.
 - In the browser modes, dropdowns, links of more than four words and page keyboard shortcuts are not questioned,
@@ -160,3 +173,13 @@ No test needs a microphone or a person: clips are made with `say` and fed throug
 - While it talks, a bare "stop" that also appears in its own line is taken as echo; say "Hey Beacon, stop".
 - The push-to-talk key is taken from every other app while Beacon runs.
 - A command stops after 40 steps (60 on the whole Mac).
+
+## Contributing
+
+Issues and pull requests are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) for the dev setup, the test suite
+and what a good pull request looks like. Anything that touches [`gate.py`](gate.py) or [`inspect.js`](inspect.js)
+needs a test that shows the action it now asks about or refuses.
+
+## License
+
+[MIT](LICENSE)
