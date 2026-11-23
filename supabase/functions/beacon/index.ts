@@ -3,6 +3,7 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
 import {
+  alertsDue,
   cost,
   CREDIT_USD,
   isDevice,
@@ -12,6 +13,7 @@ import {
   OWNER_EMAIL,
   PRICES,
   refusal,
+  type Today,
 } from "./credit.ts";
 
 const ANTHROPIC_MESSAGES = "https://api.anthropic.com/v1/messages";
@@ -23,6 +25,7 @@ const FORWARDED_ANTHROPIC_HEADERS = ["anthropic-version", "anthropic-beta"];
 const SPEECH_PATH = /\/v1\/text-to-speech\/([A-Za-z0-9]+)\/stream$/;
 
 const db = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
+const RESEND_API_KEY = Deno.env.get("RESEND_API_KEY");
 
 type Device = { id: string; spent_usd: number; credit_requested_at: string | null };
 
@@ -64,6 +67,32 @@ async function refused(caller: Device): Promise<Response | null> {
   return reason && failure(reason.status, reason.type, reason.message);
 }
 
+function email(subject: string, text: string): Promise<Response> {
+  return fetch(RESEND_EMAILS, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${RESEND_API_KEY}` },
+    body: JSON.stringify({ from: EMAIL_SENDER, to: [OWNER_EMAIL], subject, text }),
+  });
+}
+
+// Emails each alert today's totals have newly crossed. Runs after the response, so a slow email never delays a request.
+async function alert(today: Today): Promise<void> {
+  if (!RESEND_API_KEY) return;
+  for (const due of alertsDue(today)) {
+    const { data: claimed, error } = await db.rpc("claim_alert", { alert: due.key });
+    if (error) throw error;
+    if (!claimed) continue;
+    const sent = await email(due.subject, due.text);
+    if (!sent.ok) console.error(`Alert ${due.key} was claimed but the email service answered ${sent.status}.`);
+  }
+}
+
+async function record(rpc: "add_spend" | "add_speech", args: Record<string, unknown>): Promise<void> {
+  const { data: today, error } = await db.rpc(rpc, args);
+  if (error) throw error;
+  EdgeRuntime.waitUntil(alert(today));
+}
+
 async function messages(request: Request, caller: Device): Promise<Response> {
   const body = await request.json();
   if (!(body.model in PRICES)) return failure(400, "invalid_request_error", `Model ${body.model} is not offered.`);
@@ -77,13 +106,12 @@ async function messages(request: Request, caller: Device): Promise<Response> {
   const answer = await fetch(ANTHROPIC_MESSAGES, { method: "POST", headers, body: JSON.stringify(body) });
   const text = await answer.text();
   if (answer.ok) {
-    const { error } = await db.rpc("add_spend", { device: caller.id, usd: cost(body.model, JSON.parse(text).usage) });
-    if (error) throw error;
+    await record("add_spend", { device: caller.id, usd: cost(body.model, JSON.parse(text).usage) });
   }
   return new Response(text, { status: answer.status, headers: { "content-type": "application/json" } });
 }
 
-async function speech(request: Request, voice: string): Promise<Response> {
+async function speech(request: Request, caller: Device, voice: string): Promise<Response> {
   const body = await request.json();
   if (typeof body.text !== "string" || body.text.length > MAX_SPEECH_CHARACTERS) {
     return failure(400, "invalid_request_error", `Speech text must be at most ${MAX_SPEECH_CHARACTERS} characters.`);
@@ -94,6 +122,7 @@ async function speech(request: Request, voice: string): Promise<Response> {
     headers: { "content-type": "application/json", "xi-api-key": Deno.env.get("ELEVENLABS_API_KEY")! },
     body: JSON.stringify(body),
   });
+  if (answer.ok) await record("add_speech", { device: caller.id, characters: body.text.length });
   return new Response(answer.body, { status: answer.status, headers: { "content-type": "application/octet-stream" } });
 }
 
@@ -101,19 +130,12 @@ async function speech(request: Request, voice: string): Promise<Response> {
 async function creditRequest(caller: Device): Promise<Response> {
   if (Number(caller.spent_usd) < CREDIT_USD) return failure(400, "invalid_request_error", "This Mac still has credit.");
   if (caller.credit_requested_at) return failure(409, "already_requested", "More credit was already requested.");
-  const key = Deno.env.get("RESEND_API_KEY");
-  if (!key) return failure(503, "email_unavailable", "Credit requests are not set up yet.");
-  const sent = await fetch(RESEND_EMAILS, {
-    method: "POST",
-    headers: { "content-type": "application/json", authorization: `Bearer ${key}` },
-    body: JSON.stringify({
-      from: EMAIL_SENDER,
-      to: [OWNER_EMAIL],
-      subject: "A Beacon user wants more credit",
-      text: `Device ${caller.id} has spent $${Number(caller.spent_usd).toFixed(2)} and asked for more credit.\n\n` +
-        `To give it another dollar: update devices set spent_usd = 0, credit_requested_at = null where id = '${caller.id}';`,
-    }),
-  });
+  if (!RESEND_API_KEY) return failure(503, "email_unavailable", "Credit requests are not set up yet.");
+  const sent = await email(
+    "A Beacon user wants more credit",
+    `Device ${caller.id} has spent $${Number(caller.spent_usd).toFixed(2)} and asked for more credit.\n\n` +
+      `To give it another dollar: update devices set spent_usd = 0, credit_requested_at = null where id = '${caller.id}';`,
+  );
   if (!sent.ok) return failure(502, "email_failed", `The email service answered ${sent.status}.`);
   const { error } = await db.from("devices").update({ credit_requested_at: new Date().toISOString() }).eq("id", caller.id);
   if (error) throw error;
@@ -130,6 +152,6 @@ Deno.serve(async (request) => {
   if (blocked) return blocked;
   if (path.endsWith("/v1/messages")) return messages(request, caller);
   const voice = path.match(SPEECH_PATH)?.[1];
-  if (voice) return speech(request, voice);
+  if (voice) return speech(request, caller, voice);
   return failure(404, "not_found_error", `No route for ${path}.`);
 });
