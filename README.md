@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="logo.png" width="96" alt="Beacon logo: a pointer with signal arcs on a dark tile">
+  <img src="logo.png" width="96" alt="Beacon logo: a white pointer cut out of an amber light on a dark tile">
 </p>
 <h1 align="center"><code>beacon</code></h1>
 <p align="center"><b>Talk to your Mac. Watch it do the work.</b></p>
