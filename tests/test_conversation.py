@@ -11,13 +11,14 @@ import httpx2
 import pytest
 from anthropic.types import Message
 
+import credit
 import mac
 import main
 import memory
 import menubar
 import mouth
 import side
-from agent import INTERRUPTED, SAID_STEP, USER_SAID
+from agent import INTERRUPTED, SAID_STEP, SNAPSHOT_TOOL, USER_SAID
 from gate import url_refusal
 from memory import Memory
 
@@ -265,16 +266,33 @@ def test_a_stop_while_the_model_writes_a_step_ends_the_task(remembered: Memory) 
 
 @pytest.mark.parametrize("blocked_hosts", [[], ["bank.example"]], ids=["the default config", "a config that blocks others"])
 def test_linkedin_is_blocked_whatever_the_config_blocks(tmp_path: Path, blocked_hosts: list[str]) -> None:
-    config = main.Config(profile_dir=str(tmp_path / "profile"), blocked_hosts=blocked_hosts)
+    config = main.Config(blocked_hosts=blocked_hosts)
     driver = main.build_agent(config, main.WINDOW, SimpleNamespace(say_later=print),
-                              Memory(tmp_path / "memory.md", tmp_path / "memory"))
+                              Memory(tmp_path / "memory.md", tmp_path / "memory"), profile_dir=tmp_path / "profile")
     assert url_refusal(LINKEDIN_JOB, driver._blocked_hosts), f"{LINKEDIN_JOB} opens with {driver._blocked_hosts}"
     assert set(blocked_hosts) <= driver._blocked_hosts, driver._blocked_hosts
 
 
-def stream(handler, voice: str = "voice-id", model: str = "eleven_v4_turbo") -> mouth.Mouth:
-    speaker = mouth.Mouth(voice, model, "Samantha")
-    speaker._key = "key"
+def test_a_redirect_into_a_blocked_site_closes_the_page(tmp_path: Path) -> None:
+    """Navigation is checked before it starts; a link or redirect that lands on a blocked site is caught on arrival."""
+    driver = main.build_agent(main.Config(blocked_hosts=["bank.example"]), main.WINDOW, SimpleNamespace(say_later=print),
+                              Memory(tmp_path / "memory.md", tmp_path / "memory"), profile_dir=tmp_path / "profile")
+    calls = []
+
+    async def call(tool: str, arguments: dict) -> str:
+        calls.append((tool, arguments))
+        return "### Page\n- Page URL: https://login.bank.example/account\n- Page Title: Bank\n" if tool == SNAPSHOT_TOOL else ""
+
+    driver._call = call
+    shown = asyncio.run(driver._page())
+    print(shown, calls)
+    assert "login.bank.example" in shown and "blocked" in shown and "Page Title: Bank" not in shown
+    assert ("browser_navigate", {"url": "about:blank"}) in calls and not driver._on_page
+
+
+def stream(handler, key: str = "key") -> mouth.Mouth:
+    speaker = mouth.Mouth()
+    speaker._key = key
     speaker._http = httpx2.AsyncClient(transport=httpx2.MockTransport(handler))
     return speaker
 
@@ -305,7 +323,7 @@ def test_a_refused_line_is_spoken_by_macos_and_a_dead_key_is_not_tried_again(
     monkeypatch.setattr(mouth, "say", say)
     voice = stream(lambda request: httpx2.Response(status))
     asyncio.run(voice.speak("Hello."))
-    assert said == [("Hello.", "Samantha")] and bool(voice._key) is keeps_key, (said, voice._key)
+    assert said == [("Hello.", "Samantha")] and voice._voiced is keeps_key, (said, voice._voiced)
 
 
 def test_the_elevenlabs_request_asks_for_raw_audio_in_the_chosen_voice(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -318,7 +336,7 @@ def test_the_elevenlabs_request_asks_for_raw_audio_in_the_chosen_voice(monkeypat
     monkeypatch.setattr(mouth.sounddevice, "RawOutputStream", fake_speakers(played))
     asyncio.run(stream(handler).speak("Hello."))
     request = sent[0]
-    assert request.url.path == "/v1/text-to-speech/voice-id/stream" and request.url.params["output_format"] == mouth.OUTPUT_FORMAT
+    assert request.url.path == f"/v1/text-to-speech/{mouth.ELEVENLABS_VOICE}/stream" and request.url.params["output_format"] == mouth.OUTPUT_FORMAT
     assert request.headers["xi-api-key"] == "key" and json.loads(request.content) == {
         "text": "Hello.", "model_id": "eleven_v4_turbo", "voice_settings": {"stability": mouth.ELEVENLABS_STABILITY}}
     *audio, tail, stopped = played[1:]
@@ -327,25 +345,28 @@ def test_the_elevenlabs_request_asks_for_raw_audio_in_the_chosen_voice(monkeypat
     assert tail == bytes(len(tail)) and len(tail) == mouth.OUTPUT_RATE // 2 * mouth.SAMPLE_BYTES and stopped == "stop", played
 
 
-def test_the_key_comes_from_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("ELEVENLABS_API_KEY", "eleven-key")
-    assert mouth.Mouth("", "", "Samantha")._key == "eleven-key"
-    monkeypatch.delenv("ELEVENLABS_API_KEY")
-    assert mouth.Mouth("", "", "Samantha")._key == ""
+def test_without_a_key_the_voice_goes_through_beacons_server_as_this_mac(monkeypatch: pytest.MonkeyPatch,
+                                                                         tmp_path: Path) -> None:
+    monkeypatch.setattr(credit, "DEVICE_FILE", tmp_path / "device")
+    sent, played = [], []
 
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        sent.append(request)
+        return httpx2.Response(200, content=b"\x01\x02")
 
-def test_a_chosen_voice_and_model_replace_the_defaults() -> None:
-    speaker = mouth.Mouth("my-voice", "eleven_flash_v2_5", "Samantha")
-    assert (speaker._voice, speaker._model) == ("my-voice", "eleven_flash_v2_5")
-    assert (mouth.Mouth("", "", "Samantha")._voice, mouth.Mouth("", "", "Samantha")._model) == (
-        mouth.ELEVENLABS_VOICE, mouth.ELEVENLABS_MODEL)
+    monkeypatch.setattr(mouth.sounddevice, "RawOutputStream", fake_speakers(played))
+    asyncio.run(stream(handler, key="").speak("Hello."))
+    request = sent[0]
+    print(request.url, dict(request.headers))
+    assert str(request.url).startswith(f"{credit.SERVER}/v1/text-to-speech/{mouth.ELEVENLABS_VOICE}/stream")
+    assert request.headers["x-api-key"] == credit.device_id() and "xi-api-key" not in request.headers
 
 
 @pytest.mark.parametrize("mode", [main.WINDOW, main.MAC])
 def test_every_prompt_that_writes_spoken_words_carries_the_speaking_style(tmp_path: Path, mode: str) -> None:
     """The task prompts, the greeting and the mid-task replies all write words that are spoken: they must sound the same."""
-    config = main.Config(profile_dir=str(tmp_path / "profile"))
-    built = main.build_agent(config, mode, SimpleNamespace(say_later=None), Memory(tmp_path / "notes.md", tmp_path / "files"))
+    built = main.build_agent(main.Config(), mode, SimpleNamespace(say_later=None), Memory(tmp_path / "notes.md", tmp_path / "files"),
+                             profile_dir=tmp_path / "profile")
     for prompt in (built._system[0]["text"], side.GREETING_PROMPT, side.REPLY_PROMPT):
         assert mouth.SPEAKING_STYLE in prompt, prompt
 

@@ -2,8 +2,7 @@
 user talks while a task is running ("what are you seeing?", "actually, use the other one", "stop")."""
 from typing import Literal, NamedTuple
 
-from anthropic import AsyncAnthropic
-
+from credit import claude
 from mouth import SPEAKING_STYLE
 
 GREETING_TOKENS = 60
@@ -44,7 +43,7 @@ class Side:
 
     def __init__(self, model: str, agent_name: str) -> None:
         self._model, self._agent_name = model, agent_name
-        self._anthropic = AsyncAnthropic()
+        self._anthropic = claude()
 
     async def __aenter__(self) -> "Side":
         return self

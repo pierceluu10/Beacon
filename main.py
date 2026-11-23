@@ -8,11 +8,13 @@ from functools import partial
 from pathlib import Path
 
 import anthropic
+import httpx2
 import sounddevice
 from mcp import MCPError
 
+import credit
 from agent import Agent, BrowserClosedError, BrowserLostError, BrowserStartError
-from mac import MacAgent, MacPermissionError
+from mac import MacAgent, MacPermissionError, request_permissions
 from memory import Memory
 from mouth import SPEAKING_STYLE, Mouth
 from side import CHANGE, STOP, Side
@@ -22,6 +24,10 @@ HOME = Path("~/.beacon").expanduser()
 CONFIG_PATH = HOME / "config.toml"
 MEMORY_NOTES = HOME / "memory.md"
 MEMORY_FOLDER = HOME / "memory"  # also the only folder the browser modes may upload from
+PROFILE_DIR = HOME / "chrome-profile"  # the agent's own Chrome profile
+MODEL = "claude-opus-5-5"
+QUICK_MODEL = "claude-haiku-5-5"  # the greeting and replies while a task runs
+STT_MODEL = "MEDIUM_STREAMING"
 CONTINUATION_SECONDS = 0.8  # a pause mid-sentence puts 0.47 to 0.52 s between its two transcripts; 0.6 missed some under load
 FOLLOW_UP_SECONDS = 8
 CONFIRM_SECONDS = 8
@@ -33,6 +39,11 @@ STOPPED = "Stopped."
 CONFIRM_RETRY = "Sorry, yes or no?"
 CRASHED = "Something broke and I have to quit. The details are in the terminal."
 NO_MICROPHONE = "I can't hear the microphone. Allow it for this terminal in System Settings, then start me again."
+OUT_OF_CREDIT = "You've used your free dollar of Beacon. Want me to email Pierce and ask for more?"
+CREDIT_ASKED = "Done. Pierce will get back to you."
+CREDIT_ALREADY_ASKED = "You've already asked for more. Pierce has your note."
+CREDIT_NOT_ASKED = "Okay. Set your own ANTHROPIC_API_KEY to keep going."
+CREDIT_REQUEST_FAILED = "I couldn't send that. Try again later."
 SPOKEN_ERRORS: dict[type[Exception], str] = {  # most specific first
     anthropic.AuthenticationError: "The Anthropic API key was rejected.",
     anthropic.RateLimitError: "Anthropic is busy. Try again in a minute.",
@@ -53,21 +64,14 @@ WINDOW, CHROME, MAC = "window", "chrome", "mac"  # what it works in: its own Chr
 
 
 class ConfigError(ValueError):
-    """config.toml has a key this program does not know, or puts the Chrome profile where it could be uploaded."""
+    """config.toml has a key this program does not know."""
 
 
 @dataclass(frozen=True)
 class Config:
     agent_name: str = "Beacon"
     wake_aliases: list[str] = field(default_factory=list)
-    model: str = "claude-opus-5-5"
-    quick_model: str = "claude-haiku-5-5"  # the greeting and replies while a task runs
-    profile_dir: str = str(HOME / "chrome-profile")
     blocked_hosts: list[str] = field(default_factory=list)
-    stt_model: str = "MEDIUM_STREAMING"
-    voice: str = ""  # an ElevenLabs voice id; empty for "Vance"
-    voice_model: str = ""  # an ElevenLabs model; empty for its default
-    say_voice: str = "Samantha"  # the macOS voice without an ElevenLabs key
     extension_token: str = ""  # for CHROME: the Playwright Extension's token
 
     @property
@@ -158,6 +162,17 @@ async def listen_while_working(ears: Ears, agent: Agent | MacAgent, side: Side, 
         await ears.say(reply.say)
 
 
+async def offer_more_credit(ears: Ears, names: tuple[str, ...]) -> str:
+    """Once this Mac's free credit is spent: offer to email the owner for more, once, and say how it went."""
+    if not await confirm(ears, OUT_OF_CREDIT, names):
+        return CREDIT_NOT_ASKED
+    try:
+        return CREDIT_ASKED if await credit.ask_for_more() else CREDIT_ALREADY_ASKED
+    except httpx2.HTTPError as error:
+        print(repr(error), file=sys.stderr)
+        return CREDIT_REQUEST_FAILED
+
+
 async def carry_out(agent: Agent | MacAgent, ears: Ears, side: Side, command: str,
                     names: tuple[str, ...]) -> tuple[str, str | None]:
     """Run one command to a sentence worth speaking, whatever happens, and what the user said meanwhile that the task
@@ -183,6 +198,8 @@ async def carry_out(agent: Agent | MacAgent, ears: Ears, side: Side, command: st
         raise
     except tuple(SPOKEN_ERRORS) as error:
         print(repr(error), file=sys.stderr)
+        if credit.out_of_credit(error):
+            return await offer_more_credit(ears, names), None
         if isinstance(error, BrowserLostError):
             await agent.restart()  # here, in the conversation's task, which entered the agent
         return spoken_error(error), None
@@ -225,18 +242,16 @@ async def converse(ears: Ears, agent: Agent | MacAgent, side: Side, memory: Memo
                 command = ""  # the name alone in the follow-up window is a wake, not a command
 
 
-def build_agent(config: Config, mode: str, ears: Ears, memory: Memory, headless: bool = False) -> Agent | MacAgent:
-    profile_dir = Path(config.profile_dir).expanduser().resolve()
-    if profile_dir.is_relative_to(memory.folder):
-        raise ConfigError(f"profile_dir must not be inside {memory.folder}: every file in it can be uploaded.")
+def build_agent(config: Config, mode: str, ears: Ears, memory: Memory, headless: bool = False,
+                profile_dir: Path = PROFILE_DIR) -> Agent | MacAgent:
     profile_dir.mkdir(parents=True, exist_ok=True)
     memory.folder.mkdir(parents=True, exist_ok=True)
     prompt = (MAC_PROMPT if mode == MAC else SYSTEM_PROMPT).format(agent_name=config.agent_name, memory_folder=memory.folder,
                                                                    speaking_style=SPEAKING_STYLE)
     asking = partial(ask, ears, names=config.names)
     if mode == MAC:
-        return MacAgent(config.model, memory, prompt, asking, ears.say_later)
-    return Agent(config.model, profile_dir, memory, prompt, frozenset(config.blocked_hosts) | ALWAYS_BLOCKED_HOSTS,
+        return MacAgent(MODEL, memory, prompt, asking, ears.say_later)
+    return Agent(MODEL, profile_dir, memory, prompt, frozenset(config.blocked_hosts) | ALWAYS_BLOCKED_HOSTS,
                  partial(confirm, ears, names=config.names), asking, ears.say_later, headless,
                  config.extension_token if mode == CHROME else "")
 
@@ -246,12 +261,19 @@ async def main(started: Callable[[Ears], None] = lambda ears: None, mode: str = 
     whether it listens for its name (both are the menu bar's switches)."""
     config = load_config()
     memory = Memory(MEMORY_NOTES.resolve(), MEMORY_FOLDER.resolve())
-    async with Mouth(config.voice, config.voice_model, config.say_voice) as mouth:
+    request_permissions()  # every macOS prompt at once, on the first launch, rather than one per failure later
+    async with Mouth() as mouth:
         try:
-            async with (Ears(config.stt_model, list(config.names), mouth, wake) as ears,
-                        build_agent(config, mode, ears, memory) as agent, Side(config.quick_model, config.agent_name) as side):
+            async with (Ears(STT_MODEL, list(config.names), mouth, wake) as ears,
+                        build_agent(config, mode, ears, memory) as agent, Side(QUICK_MODEL, config.agent_name) as side):
                 started(ears)
-                greeting, _ = await asyncio.gather(side.greet(memory.notes()), agent.warm_up())
+                try:
+                    greeting, _ = await asyncio.gather(side.greet(memory.notes()), agent.warm_up())
+                except anthropic.APIStatusError as error:
+                    if not credit.out_of_credit(error):
+                        raise
+                    await ears.say(await offer_more_credit(ears, config.names))
+                    return
                 await ears.say(greeting)
                 await converse(ears, agent, side, memory, config)
         except tuple(SPOKEN_ERRORS) as error:  # startup failures and a browser lost between commands; carry_out speaks the rest

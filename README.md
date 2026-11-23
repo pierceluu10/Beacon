@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="logo.png" width="96" alt="Beacon logo: a pointer with signal arcs on a dark tile">
+  <img src="logo.png" width="96" alt="Beacon logo: a white pointer cut out of an amber light on a dark tile">
 </p>
 <h1 align="center"><code>beacon</code></h1>
 <p align="center"><b>Talk to your Mac. Watch it do the work.</b></p>
@@ -42,28 +42,26 @@ Beacon: "Got it, Saturday."
 
 - macOS on Apple silicon, with the Xcode command line tools (`xcode-select --install`)
 - Python 3.12 and [uv](https://docs.astral.sh/uv/)
-- An Anthropic API key; optionally an ElevenLabs key for a natural voice
-- Microphone, Screen Recording and Accessibility access for your terminal
+
+No API keys: every Mac gets $1 of free credit, and when it runs out Beacon offers to ask for more.
 
 ## Quick start
 
 ```bash
 git clone https://github.com/pierceluu10/Beacon.git && cd Beacon
-export ANTHROPIC_API_KEY=...       # if it is not already in your shell profile
-export ELEVENLABS_API_KEY=...      # optional: a natural voice instead of macOS `say`
 uv sync
 uv run python main.py
 ```
 
-The first run asks for microphone access for your terminal, then Screen Recording and Accessibility (System
-Settings, Privacy and Security). Allow them, quit and reopen the terminal, and start Beacon again. It greets you
-by name if your memory says who you are.
+On first launch Beacon asks for everything it needs at once: the microphone, Screen Recording and Accessibility,
+all for the terminal you ran it from. Allow each one, quit and reopen the terminal (macOS applies Screen Recording
+only after a restart), and start Beacon again. Then **hold ⌥Space** (the default key) and talk.
 
 ## Usage
 
 ### Talking to it
 
-- **Push to talk**: hold ⌥Space, speak, let go. Pressing it while Beacon talks cuts it off.
+- **Push to talk**: hold ⌥Space (the default; change it in the menu), speak, let go. Pressing it while Beacon talks cuts it off.
 - **"Hey Beacon"**: say the name and the command, or the name, wait for the chime, then speak. Works while it is
   talking too. Turn it off in the menu to keep the microphone closed until you hold the key.
 
@@ -86,38 +84,24 @@ memory folder is the only place uploads come from. Never put passwords in memory
 ### Where it works
 
 - **Whole Mac** (default): screenshots plus the real mouse and keyboard, in any app, main display only. No spoken
-  confirmation: it does what you ask, including sending and buying. Every step sends a screenshot to the
-  Anthropic API.
+  confirmation: it does what you ask, including sending and buying. Every step sends a screenshot to Claude.
 - **Separate Chrome window**: its own profile at `~/.beacon/chrome-profile`; log in to sites there once. With your
   everyday Chrome in front, "Hey Beacon, what is this page about?" opens the same address in its window.
 - **My Chrome** (opt-in): a tab in the Chrome you already use, with every login in reach. Install the
   [Playwright Extension](https://chromewebstore.google.com/detail/playwright-extension/mmlmfjhmonkocbjadbfplnigmagldckm),
-  put its token in `~/.beacon/config.toml` as `extension_token`, and `chmod 600` that file. The token lets any program
+  put its token in `~/.beacon/config.toml` as `extension_token = "..."`, and `chmod 600` that file. The token lets any program
   on this Mac attach to your Chrome, so rotate it if it leaks.
-
-### Voice
-
-With `ELEVENLABS_API_KEY` set it speaks with ElevenLabs (voice "Vance"); `voice` and `voice_model` in the config
-pick another voice or model. Without a key, or if the key is rejected, it uses macOS `say`.
 
 ## Configuration
 
-Optional, in `~/.beacon/config.toml`. Unknown keys are an error. The menu's choices live in
-`~/.beacon/settings.json`, not here.
+Optional, in `~/.beacon/config.toml`:
 
-| Key | Default | Meaning |
-|---|---|---|
-| `agent_name` | `"Beacon"` | The wake name, one word. Any name works; no training. |
-| `wake_aliases` | `[]` | Other spellings the recogniser produces for your name. |
-| `model` | `"claude-opus-5-5"` | Any Anthropic model id. The tests run on the default; `claude-sonnet-5-5` was tried by hand on multi-step tasks. |
-| `quick_model` | `"claude-haiku-5-5"` | The greeting and the quick replies while a task runs. |
-| `profile_dir` | `"~/.beacon/chrome-profile"` | The agent's own Chrome profile. |
-| `blocked_hosts` | `[]` | Sites it may never navigate to, for example your bank. Links and redirects that land there are not checked. |
-| `stt_model` | `"MEDIUM_STREAMING"` | Or `"SMALL_STREAMING"` (less memory, slightly less accurate). |
-| `voice` | `""` | An ElevenLabs voice id; empty for "Vance". |
-| `voice_model` | `""` | An ElevenLabs model; empty for its default. |
-| `say_voice` | `"Samantha"` | The macOS voice without an ElevenLabs key; any voice from `say -v '?'`. |
-| `extension_token` | `""` | Set it to work in your own Chrome through the Playwright Extension (see above). |
+| Key | Meaning |
+|---|---|
+| `agent_name` | The wake name instead of "Beacon"; one word, no training. |
+| `wake_aliases` | Other spellings the recogniser produces for that name. |
+| `blocked_hosts` | Sites it may never open, for example `["mybank.com"]`. |
+| `extension_token` | For **My Chrome** (above). |
 
 ## Security
 
@@ -136,20 +120,26 @@ trusting the model:
   rule).
 - **Only public web addresses.** `url_refusal()` in [`gate.py`](gate.py) allows plain `http(s)` only and refuses
   any site name that resolves to this machine or a private network. `blocked_hosts` adds your own no-go sites;
-  `linkedin.com` is always blocked (`ALWAYS_BLOCKED_HOSTS` in [`main.py`](main.py)).
+  `linkedin.com` is always blocked (`ALWAYS_BLOCKED_HOSTS` in [`main.py`](main.py)). A link or redirect that lands
+  on a blocked site closes the page (`LANDED_BLOCKED` in [`agent.py`](agent.py)).
 - **Files stay put.** Uploads come only from the memory folder (the browser server's working directory in
-  [`agent.py`](agent.py)), saving pages to files is refused (`FILE_REFUSAL`), and the Chrome profile may not sit
-  inside the memory folder.
-- **Speech stays local.** Recognition runs on this Mac with Moonshine ([`voice.py`](voice.py)); API keys are read
-  from the environment, never written to disk.
+  [`agent.py`](agent.py)), and saving pages to files is refused (`FILE_REFUSAL`).
+- **Speech stays local.** Recognition runs on this Mac with Moonshine ([`voice.py`](voice.py)); only the text of
+  what you said reaches Claude.
+- **No keys on your Mac.** The Claude and ElevenLabs keys live on Beacon's server
+  ([`supabase/functions/beacon`](supabase/functions/beacon)), which knows each Mac only by a random id
+  (`~/.beacon/device`, [`credit.py`](credit.py)), allows only Beacon's two models, caps each request, and stops at
+  $1 per Mac.
 
 ## Architecture
 
 | File | Job |
 |---|---|
 | `main.py` | Configuration and the conversation loop, including listening while a task runs. |
+| `credit.py` | The free credit: this Mac's id, Claude through Beacon's server, and the request for more. |
+| `supabase/functions/beacon` | Beacon's server: holds the keys, counts each Mac's spend, emails the owner for more credit. |
 | `voice.py` | Moonshine speech-to-text on the microphone, push-to-talk, and wake / yes / no / stop parsing. |
-| `mouth.py` | Speech out: ElevenLabs streaming, or macOS `say` without a key. |
+| `mouth.py` | Speech out: the ElevenLabs voice through Beacon's server, or macOS `say` if that fails. |
 | `side.py` | The fast model behind the greeting and the quick replies mid-task. |
 | `memory.py` | Turns your notes and memory files into the first message of a conversation. |
 | `agent.py` | Claude driving Chrome through the Playwright MCP server. |
@@ -164,15 +154,9 @@ trusting the model:
 ## Known limitations
 
 - The whole-Mac mode has no gate: it asks nothing before acting. Stop it by voice or the key.
-- In the browser modes, dropdowns, links of more than four words and page keyboard shortcuts are not questioned,
-  and a hostile page can still disguise a pay step. Keep banking and main email out of its profile.
-- Typed secrets are hidden only in the page itself, not inside embedded frames (most card forms). Press the page's
-  own button before you say "continue".
-- The address check uses this Mac's DNS lookup; a site that answers Chrome differently is not caught. Links and
-  redirects into `blocked_hosts` are not checked.
-- While it talks, a bare "stop" that also appears in its own line is taken as echo; say "Hey Beacon, stop".
-- The push-to-talk key is taken from every other app while Beacon runs.
-- A command stops after 40 steps (60 on the whole Mac).
+- In the browser modes a hostile page can still disguise a pay step, and secrets you type inside embedded card
+  forms are not hidden. Keep banking and main email out of its profile.
+- $1 of Claude is roughly 30 to 80 steps on the whole Mac. Set your own `ANTHROPIC_API_KEY` to go past it.
 
 ## Contributing
 

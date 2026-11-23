@@ -22,6 +22,7 @@ from mcp import MCPError
 from mcp.types import INTERNAL_ERROR
 
 import agent
+import credit
 import everyday
 import mac
 import main
@@ -843,6 +844,7 @@ def test_a_fatal_error_is_spoken_once_and_its_reason_is_printed_on_exit(
     monkeypatch.setattr(main, "load_config", main.Config)
     monkeypatch.setattr(main, "MEMORY_NOTES", tmp_path / "memory.md")
     monkeypatch.setattr(main, "MEMORY_FOLDER", tmp_path / "memory")
+    monkeypatch.setattr(main, "request_permissions", lambda: None)
     monkeypatch.setattr(main, "Mouth", lambda *settings: ScriptedMouth(said))
     monkeypatch.setattr(main, "Ears", lambda *settings: ScriptedEars(said, *heard))
     monkeypatch.setattr(main, "Side", lambda *settings: ScriptedSide())
@@ -861,6 +863,53 @@ def test_an_api_error_during_a_command_is_spoken_and_its_reason_is_printed(capsy
     printed = capsys.readouterr().err
     assert line == main.SPOKEN_ERRORS[anthropic.APIStatusError], f"the user heard {line!r}"
     assert MODEL_NOT_FOUND in printed, f"the spoken line names no cause and the terminal shows only {printed!r}"
+
+
+def out_of_credit() -> anthropic.APIStatusError:
+    refused = httpx2.Response(402, request=httpx2.Request("POST", f"{credit.SERVER}/v1/messages"))
+    return anthropic.APIStatusError("credit_exhausted", response=refused, body=None)
+
+
+@pytest.mark.parametrize(("answer", "asked", "line"), [
+    ("yes", True, main.CREDIT_ASKED),
+    ("yes", False, main.CREDIT_ALREADY_ASKED),
+    ("no", None, main.CREDIT_NOT_ASKED),
+], ids=["asks for more", "had already asked", "declines"])
+def test_spent_credit_offers_one_email_to_the_owner(monkeypatch: pytest.MonkeyPatch, answer: str, asked: bool | None,
+                                                     line: str) -> None:
+    requests = []
+
+    async def ask_for_more() -> bool:
+        requests.append(True)
+        return asked
+
+    monkeypatch.setattr(credit, "ask_for_more", ask_for_more)
+    said: list[str] = []
+    reply = asyncio.run(main.offer_more_credit(ScriptedEars(said, answer), NAMES))
+    assert said == [main.OUT_OF_CREDIT] and reply == line, (said, reply)
+    assert len(requests) == (asked is not None), "the email goes only after a spoken yes"
+
+
+def test_a_command_that_runs_out_of_credit_offers_more(monkeypatch: pytest.MonkeyPatch) -> None:
+    offered = []
+
+    async def offer_more_credit(ears: ScriptedEars, names: tuple[str, ...]) -> str:
+        offered.append(names)
+        return main.CREDIT_NOT_ASKED
+
+    monkeypatch.setattr(main, "offer_more_credit", offer_more_credit)
+    reply, late = asyncio.run(main.carry_out(BrokenAgent(out_of_credit(), starts=True), ScriptedEars([]), ScriptedSide(),
+                                             "go on", NAMES))
+    assert offered == [NAMES] and (reply, late) == (main.CREDIT_NOT_ASKED, None)
+
+
+def test_a_failed_credit_request_is_said_and_printed(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture) -> None:
+    async def ask_for_more() -> bool:
+        raise httpx2.ConnectError("no network")
+
+    monkeypatch.setattr(credit, "ask_for_more", ask_for_more)
+    reply = asyncio.run(main.offer_more_credit(ScriptedEars([], "yes"), NAMES))
+    assert reply == main.CREDIT_REQUEST_FAILED and "no network" in capsys.readouterr().err
 
 
 class SlowAgent:

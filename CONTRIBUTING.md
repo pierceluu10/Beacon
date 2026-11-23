@@ -11,19 +11,19 @@ line tools (`xcode-select --install`, for the menu bar helper).
 ```bash
 git clone https://github.com/pierceluu10/Beacon.git && cd Beacon
 uv sync
-uv run python main.py       # needs ANTHROPIC_API_KEY; see the README for permissions
+uv run python main.py       # runs on this Mac's free $1; export ANTHROPIC_API_KEY to use your own
 ```
 
 ## Tests
 
 ```bash
-uv run pytest                 # gate rules, real speech recognition on synthesized clips, real headless Chrome
-RUN_LIVE=1 uv run pytest      # adds the live Claude and YouTube runs (a few cents, needs ANTHROPIC_API_KEY)
+uv run pytest                                           # everything in Python, free
+node --test supabase/functions/beacon/credit.test.ts    # the server's credit rules
 ```
 
-No test needs a microphone or a person: clips are made with `say` and fed through a fake input device
-([`tests/fake_microphone.py`](tests/fake_microphone.py)), and browser tests load pages from
-[`tests/site/`](tests/site). Run the full suite before you open a pull request.
+The tests cost nothing and need no key, microphone or person: no test calls Claude or ElevenLabs, speech clips are
+made with `say` and fed through a fake input device ([`tests/fake_microphone.py`](tests/fake_microphone.py)), and
+browser tests drive headless Chrome on pages in [`tests/site/`](tests/site). Run both before you open a pull request.
 
 ## Making a change
 
