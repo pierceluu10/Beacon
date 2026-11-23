@@ -14,7 +14,7 @@ from mcp import MCPError
 from agent import Agent, BrowserClosedError, BrowserLostError, BrowserStartError
 from mac import MacAgent, MacPermissionError
 from memory import Memory
-from mouth import SERVICES, SPEAKING_STYLE, Mouth
+from mouth import SPEAKING_STYLE, Mouth
 from side import CHANGE, STOP, Side
 from voice import Ears, Heard, MicrophoneSilentError, is_dismissal, is_stop, parse_yes_no, wake_command
 
@@ -53,8 +53,7 @@ WINDOW, CHROME, MAC = "window", "chrome", "mac"  # what it works in: its own Chr
 
 
 class ConfigError(ValueError):
-    """config.toml has a key this program does not know, an unknown voice service, or puts the Chrome profile where it
-    could be uploaded."""
+    """config.toml has a key this program does not know, or puts the Chrome profile where it could be uploaded."""
 
 
 @dataclass(frozen=True)
@@ -66,10 +65,9 @@ class Config:
     profile_dir: str = str(HOME / "chrome-profile")
     blocked_hosts: list[str] = field(default_factory=list)
     stt_model: str = "MEDIUM_STREAMING"
-    voice_service: str = "elevenlabs"  # or "cartesia"; used when that service's key is set
-    voice: str = ""  # a voice id from that service; empty for its default
-    voice_model: str = ""  # empty for the service's default
-    say_voice: str = "Samantha"  # the macOS voice without a voice service key
+    voice: str = ""  # an ElevenLabs voice id; empty for "Vance"
+    voice_model: str = ""  # an ElevenLabs model; empty for its default
+    say_voice: str = "Samantha"  # the macOS voice without an ElevenLabs key
     extension_token: str = ""  # for CHROME: the Playwright Extension's token
 
     @property
@@ -82,10 +80,7 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
     unknown = set(values) - {known.name for known in fields(Config)}
     if unknown:
         raise ConfigError(f"Unknown keys in {path}: {sorted(unknown)}")
-    config = Config(**values)
-    if config.voice_service not in SERVICES:
-        raise ConfigError(f"voice_service in {path} must be one of {sorted(SERVICES)}, not {config.voice_service!r}")
-    return config
+    return Config(**values)
 
 
 def spoken_error(error: Exception) -> str:
@@ -251,7 +246,7 @@ async def main(started: Callable[[Ears], None] = lambda ears: None, mode: str = 
     whether it listens for its name (both are the menu bar's switches)."""
     config = load_config()
     memory = Memory(MEMORY_NOTES.resolve(), MEMORY_FOLDER.resolve())
-    async with Mouth(config.voice_service, config.voice, config.voice_model, config.say_voice) as mouth:
+    async with Mouth(config.voice, config.voice_model, config.say_voice) as mouth:
         try:
             async with (Ears(config.stt_model, list(config.names), mouth, wake) as ears,
                         build_agent(config, mode, ears, memory) as agent, Side(config.quick_model, config.agent_name) as side):

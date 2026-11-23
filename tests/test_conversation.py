@@ -1,4 +1,4 @@
-"""Memory, the menu's saved settings, the quick side replies, the ElevenLabs and Cartesia voices and their fallback, and how a
+"""Memory, the menu's saved settings, the quick side replies, the ElevenLabs voice and its fallback, and how a
 running task takes the user's words and speaks its first line. No microphone, no API request, no sound."""
 import asyncio
 import base64
@@ -272,8 +272,8 @@ def test_linkedin_is_blocked_whatever_the_config_blocks(tmp_path: Path, blocked_
     assert set(blocked_hosts) <= driver._blocked_hosts, driver._blocked_hosts
 
 
-def stream(handler, service: str = "elevenlabs", voice: str = "voice-id", model: str = "eleven_v4_turbo") -> mouth.Mouth:
-    speaker = mouth.Mouth(service, voice, model, "Samantha")
+def stream(handler, voice: str = "voice-id", model: str = "eleven_v4_turbo") -> mouth.Mouth:
+    speaker = mouth.Mouth(voice, model, "Samantha")
     speaker._key = "key"
     speaker._http = httpx2.AsyncClient(transport=httpx2.MockTransport(handler))
     return speaker
@@ -327,37 +327,18 @@ def test_the_elevenlabs_request_asks_for_raw_audio_in_the_chosen_voice(monkeypat
     assert tail == bytes(len(tail)) and len(tail) == mouth.OUTPUT_RATE // 2 * mouth.SAMPLE_BYTES and stopped == "stop", played
 
 
-def test_cartesia_is_asked_for_raw_audio_at_the_rate_the_speakers_play(monkeypatch: pytest.MonkeyPatch) -> None:
-    sent, played = [], []
-
-    def handler(request: httpx2.Request) -> httpx2.Response:
-        sent.append(request)
-        return httpx2.Response(200, content=b"\x01\x02\x03\x04")
-
-    monkeypatch.setattr(mouth.sounddevice, "RawOutputStream", fake_speakers(played))
-    asyncio.run(stream(handler, "cartesia", "", "").speak("Hello."))
-    request, body = sent[0], json.loads(sent[0].content)
-    print(request.url, dict(request.headers), body)
-    assert request.url == mouth.CARTESIA_STREAM and request.headers["authorization"] == "Bearer key"
-    assert request.headers["cartesia-version"] == mouth.CARTESIA_VERSION
-    service = mouth.SERVICES["cartesia"]
-    assert body == {"model_id": service.model, "transcript": "Hello.", "voice": service.voice,
-                    "output_format": {"container": "raw", "encoding": "pcm_s16le", "sample_rate": mouth.OUTPUT_RATE}}
-    assert played[0]["samplerate"] == mouth.OUTPUT_RATE and played[1] == b"\x01\x02\x03\x04" and played[-1] == "stop", played
-
-
-@pytest.mark.parametrize(("service", "variable"), [("elevenlabs", "ELEVENLABS_API_KEY"), ("cartesia", "CARTESIA_API_KEY")])
-def test_each_service_reads_only_its_own_key(monkeypatch: pytest.MonkeyPatch, service: str, variable: str) -> None:
-    """With both keys set, the chosen service must not send the other service's key."""
+def test_the_key_comes_from_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ELEVENLABS_API_KEY", "eleven-key")
-    monkeypatch.setenv("CARTESIA_API_KEY", "cartesia-key")
-    assert mouth.Mouth(service, "", "", "Samantha")._key == {"ELEVENLABS_API_KEY": "eleven-key",
-                                                              "CARTESIA_API_KEY": "cartesia-key"}[variable]
+    assert mouth.Mouth("", "", "Samantha")._key == "eleven-key"
+    monkeypatch.delenv("ELEVENLABS_API_KEY")
+    assert mouth.Mouth("", "", "Samantha")._key == ""
 
 
-def test_a_chosen_voice_and_model_replace_the_service_defaults() -> None:
-    speaker = mouth.Mouth("cartesia", "my-voice", "sonic-3", "Samantha")
-    assert (speaker._voice, speaker._model) == ("my-voice", "sonic-3")
+def test_a_chosen_voice_and_model_replace_the_defaults() -> None:
+    speaker = mouth.Mouth("my-voice", "eleven_flash_v2_5", "Samantha")
+    assert (speaker._voice, speaker._model) == ("my-voice", "eleven_flash_v2_5")
+    assert (mouth.Mouth("", "", "Samantha")._voice, mouth.Mouth("", "", "Samantha")._model) == (
+        mouth.ELEVENLABS_VOICE, mouth.ELEVENLABS_MODEL)
 
 
 @pytest.mark.parametrize("mode", [main.WINDOW, main.MAC])
@@ -367,15 +348,6 @@ def test_every_prompt_that_writes_spoken_words_carries_the_speaking_style(tmp_pa
     built = main.build_agent(config, mode, SimpleNamespace(say_later=None), Memory(tmp_path / "notes.md", tmp_path / "files"))
     for prompt in (built._system[0]["text"], side.GREETING_PROMPT, side.REPLY_PROMPT):
         assert mouth.SPEAKING_STYLE in prompt, prompt
-
-
-def test_an_unknown_voice_service_is_a_config_error(tmp_path: Path) -> None:
-    config = tmp_path / "config.toml"
-    config.write_text('voice_service = "playht"\n')
-    with pytest.raises(main.ConfigError, match="voice_service"):
-        main.load_config(config)
-    config.write_text('voice_service = "cartesia"\n')
-    assert main.load_config(config).voice_service == "cartesia"
 
 
 @pytest.mark.parametrize("region", [(0, 0, 200, 351), (10, 10, 900, 60), None], ids=["tall zoom", "wide zoom", "screen"])
