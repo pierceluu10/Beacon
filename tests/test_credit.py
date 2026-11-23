@@ -1,4 +1,4 @@
-"""Beacon's hosted credit on this Mac: the device id, which key a request carries, and the one email for more credit.
+"""Beacon's hosted credit on this Mac: the device id, which key a request carries, and the one request for more credit.
 No request leaves the machine."""
 import asyncio
 from pathlib import Path

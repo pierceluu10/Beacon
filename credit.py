@@ -39,7 +39,8 @@ def out_of_credit(error: BaseException) -> bool:
 
 
 async def ask_for_more() -> bool:
-    """Email Beacon's owner that this Mac wants more credit. False when it already asked; raises on any other failure."""
+    """Tell Beacon's server this Mac wants more credit, for its owner to review.
+    False when it already asked; raises on any other failure."""
     async with httpx2.AsyncClient(timeout=REQUEST_TIMEOUT_SECONDS) as http:
         answer = await http.post(CREDIT_REQUEST, headers={"x-api-key": device_id()})
     if answer.status_code == ALREADY_REQUESTED:
