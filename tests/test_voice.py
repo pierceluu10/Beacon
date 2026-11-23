@@ -345,7 +345,7 @@ def ears(run):
     """The real Ears on the fake microphone, loaded once; speaking is silent and nearly instant."""
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(voice, "ECHO_TAIL_SECONDS", SHORT_ECHO_TAIL_SECONDS)
-        listening = Ears(CONFIG.stt_model, list(NAMES), MOUTH, wake=True)
+        listening = Ears(main.STT_MODEL, list(NAMES), MOUTH, wake=True)
         run(listening.__aenter__())
         yield listening
         run(listening.__aexit__(None, None, None))

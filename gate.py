@@ -50,6 +50,12 @@ class Verdict(NamedTuple):
 ALLOW = Verdict("allow")
 
 
+def blocked(host: str, blocked_hosts: frozenset[str]) -> bool:
+    """Whether host is one of blocked_hosts or a subdomain of one."""
+    host = host.lower()
+    return any(host == entry or host.endswith(f".{entry}") for entry in map(str.lower, blocked_hosts))
+
+
 def url_refusal(url: str, blocked_hosts: frozenset[str]) -> str | None:
     """Why the agent may not open url, or None when it may."""
     plain = PLAIN_ADDRESS.fullmatch(url)
@@ -57,7 +63,7 @@ def url_refusal(url: str, blocked_hosts: frozenset[str]) -> str | None:
         return ("Only plain http and https addresses are allowed: lower-case scheme, a site name of ASCII letters, digits, "
                 "dots and hyphens, no user name, no trailing dot.")
     host = plain["host"].lower()
-    if any(host == blocked or host.endswith(f".{blocked}") for blocked in (*map(str.lower, blocked_hosts), "localhost")):
+    if blocked(host, blocked_hosts | {"localhost"}):
         return f"{host} is blocked."
     try:
         address = ipaddress.ip_address(socket.inet_aton(host))  # also reads 127.1 and 2130706433, as Chrome does

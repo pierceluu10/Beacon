@@ -7,14 +7,15 @@ from contextlib import AsyncExitStack
 from datetime import datetime
 from pathlib import Path
 
-from anthropic import DEFAULT_TIMEOUT, AsyncAnthropic, Timeout
+from anthropic import DEFAULT_TIMEOUT, Timeout
 from anthropic.types import Message
 from mcp import ClientSession, MCPError, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from mcp.types import CONNECTION_CLOSED, REQUEST_TIMEOUT
 
 import everyday
-from gate import ALLOW, UNREADABLE, Verdict, judge, judge_dialog, to_inspect, url_refusal
+from credit import claude
+from gate import ALLOW, UNREADABLE, Verdict, blocked, judge, judge_dialog, to_inspect, url_refusal
 from memory import Memory
 
 PLAYWRIGHT_MCP = "@playwright/mcp@0.0.86"
@@ -46,6 +47,8 @@ EVALUATE_RESULT = re.compile(r"### Result\n(.*?)(?=\n###|\Z)", re.DOTALL)
 MEDIA_PLAYING_RESULT = "### Result\ntrue"
 HIDDEN = "(hidden)"
 BLANK_PAGE = "### Page\n- Page URL: about:blank\n"
+LANDED_ON = re.compile(r"- Page URL: https?://([^/:?#\s]+)")
+LANDED_BLOCKED = "A link or redirect led to {host}, which is blocked, so the page was closed. Do not try to reach it another way."
 WEB_PAGE = "### Page\n- Page URL: http"
 NOW = "It is {now:%A %d %B %Y, %H:%M} local time."
 PAGE_NOW = "The page right now:"
@@ -179,7 +182,7 @@ class Agent(Conversation):
             args=["-y", PLAYWRIGHT_MCP, *(["--extension"] if extension_token else own_window),
                   "--output-dir", str(profile_dir.parent / "playwright-output"), "--snapshot-mode", "none", "--codegen", "none",
                   "--timeout-navigation", NAVIGATION_TIMEOUT_MILLISECONDS, "--timeout-settle", SETTLE_MILLISECONDS])
-        self._anthropic = AsyncAnthropic(timeout=Timeout(REQUEST_TIMEOUT_SECONDS, connect=DEFAULT_TIMEOUT.connect))
+        self._anthropic = claude(timeout=Timeout(REQUEST_TIMEOUT_SECONDS, connect=DEFAULT_TIMEOUT.connect))
         self._stack = AsyncExitStack()
         self._pages: list[dict] = []
         self._on_page = False
@@ -292,6 +295,11 @@ class Agent(Conversation):
         if blank and self._on_page:
             raise BrowserClosedError
         self._on_page = not blank
+        landed = LANDED_ON.search(snapshot)
+        if landed and blocked(landed[1], self._blocked_hosts):  # navigation is checked before it starts, redirects only here
+            await self._call("browser_navigate", {"url": "about:blank"})
+            self._on_page = False
+            return LANDED_BLOCKED.format(host=landed[1])
         typed = EVALUATE_RESULT.search(await self._call(EVALUATE_TOOL, {"function": SECRET_VALUES_JS}))
         shown = [re.escape(form) for secret in (json.loads(typed[1]) if typed else [])
                  for form in (secret, json.dumps(secret, ensure_ascii=False))]  # the snapshot quotes some values

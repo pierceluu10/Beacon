@@ -6,11 +6,12 @@ from datetime import datetime
 from pathlib import Path
 
 import Quartz
-from anthropic import DEFAULT_TIMEOUT, AsyncAnthropic, Timeout
+from anthropic import DEFAULT_TIMEOUT, Timeout
 from ApplicationServices import AXIsProcessTrustedWithOptions, kAXTrustedCheckOptionPrompt
 
 from agent import (ASK_TOOL, CACHED, INTERRUPTED, KEPT_BLOCK_TYPES, MAX_TOKENS, NO_ANSWER, NOW, OUT_OF_STEPS,
                    REQUEST_TIMEOUT_SECONDS, WARMUP, Ask, Conversation, Narrate)
+from credit import claude
 from memory import Memory
 
 TOOLSET = "computer"
@@ -173,6 +174,13 @@ class Mac:
         return [{"type": "text", "text": OK}]
 
 
+def request_permissions() -> None:
+    """Show macOS's Screen Recording and Accessibility prompts for whatever is still missing; they do not block."""
+    if not Quartz.CGPreflightScreenCaptureAccess():
+        Quartz.CGRequestScreenCaptureAccess()
+    AXIsProcessTrustedWithOptions({kAXTrustedCheckOptionPrompt: True})
+
+
 def check_permissions() -> None:
     """Raise MacPermissionError, after asking macOS to show its prompt, when the screen cannot be seen or controlled."""
     missing = []
@@ -192,7 +200,7 @@ class MacAgent(Conversation):
         super().__init__(memory, narrate)
         self._model, self._ask = model, ask
         self._system = [{"type": "text", "text": system_prompt, "cache_control": CACHED}]
-        self._anthropic = AsyncAnthropic(timeout=Timeout(REQUEST_TIMEOUT_SECONDS, connect=DEFAULT_TIMEOUT.connect))
+        self._anthropic = claude(timeout=Timeout(REQUEST_TIMEOUT_SECONDS, connect=DEFAULT_TIMEOUT.connect))
         self._screens: list[dict] = []
 
     async def __aenter__(self) -> "MacAgent":
