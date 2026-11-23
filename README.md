@@ -137,7 +137,7 @@ trusting the model:
 |---|---|
 | `main.py` | Configuration and the conversation loop, including listening while a task runs. |
 | `credit.py` | The free credit: this Mac's id, Claude through Beacon's server, and the request for more. |
-| `supabase/functions/beacon` | Beacon's server: holds the keys, counts each Mac's spend, emails the owner for more credit. |
+| `supabase/functions/beacon` | Beacon's server: holds the keys, counts each Mac's Claude spend and ElevenLabs characters, records requests for more credit. |
 | `voice.py` | Moonshine speech-to-text on the microphone, push-to-talk, and wake / yes / no / stop parsing. |
 | `mouth.py` | Speech out: the ElevenLabs voice through Beacon's server, or macOS `say` if that fails. |
 | `side.py` | The fast model behind the greeting and the quick replies mid-task. |

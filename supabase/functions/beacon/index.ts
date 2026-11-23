@@ -9,15 +9,12 @@ import {
   MAX_OUTPUT_TOKENS,
   MAX_SPEECH_CHARACTERS,
   NEW_DEVICES_PER_IP_PER_DAY,
-  OWNER_EMAIL,
   PRICES,
   refusal,
 } from "./credit.ts";
 
 const ANTHROPIC_MESSAGES = "https://api.anthropic.com/v1/messages";
 const ELEVENLABS_SPEECH = "https://api.elevenlabs.io/v1/text-to-speech/";
-const RESEND_EMAILS = "https://api.resend.com/emails";
-const EMAIL_SENDER = "Beacon <onboarding@resend.dev>"; // Resend's shared sender; works before a domain is verified
 const DAY_MILLISECONDS = 86_400_000;
 const FORWARDED_ANTHROPIC_HEADERS = ["anthropic-version", "anthropic-beta"];
 const SPEECH_PATH = /\/v1\/text-to-speech\/([A-Za-z0-9]+)\/stream$/;
@@ -83,7 +80,7 @@ async function messages(request: Request, caller: Device): Promise<Response> {
   return new Response(text, { status: answer.status, headers: { "content-type": "application/json" } });
 }
 
-async function speech(request: Request, voice: string): Promise<Response> {
+async function speech(request: Request, caller: Device, voice: string): Promise<Response> {
   const body = await request.json();
   if (typeof body.text !== "string" || body.text.length > MAX_SPEECH_CHARACTERS) {
     return failure(400, "invalid_request_error", `Speech text must be at most ${MAX_SPEECH_CHARACTERS} characters.`);
@@ -94,30 +91,21 @@ async function speech(request: Request, voice: string): Promise<Response> {
     headers: { "content-type": "application/json", "xi-api-key": Deno.env.get("ELEVENLABS_API_KEY")! },
     body: JSON.stringify(body),
   });
+  if (answer.ok) {
+    const { error } = await db.rpc("add_speech", { device: caller.id, characters: body.text.length });
+    if (error) throw error;
+  }
   return new Response(answer.body, { status: answer.status, headers: { "content-type": "application/octet-stream" } });
 }
 
-// One email per device to the owner, once its credit is spent.
+// One request per device, once its credit is spent. The owner reviews them in the devices table and grants another dollar
+// with: update devices set spent_usd = 0, credit_requested_at = null where id = '...';
 async function creditRequest(caller: Device): Promise<Response> {
   if (Number(caller.spent_usd) < CREDIT_USD) return failure(400, "invalid_request_error", "This Mac still has credit.");
   if (caller.credit_requested_at) return failure(409, "already_requested", "More credit was already requested.");
-  const key = Deno.env.get("RESEND_API_KEY");
-  if (!key) return failure(503, "email_unavailable", "Credit requests are not set up yet.");
-  const sent = await fetch(RESEND_EMAILS, {
-    method: "POST",
-    headers: { "content-type": "application/json", authorization: `Bearer ${key}` },
-    body: JSON.stringify({
-      from: EMAIL_SENDER,
-      to: [OWNER_EMAIL],
-      subject: "A Beacon user wants more credit",
-      text: `Device ${caller.id} has spent $${Number(caller.spent_usd).toFixed(2)} and asked for more credit.\n\n` +
-        `To give it another dollar: update devices set spent_usd = 0, credit_requested_at = null where id = '${caller.id}';`,
-    }),
-  });
-  if (!sent.ok) return failure(502, "email_failed", `The email service answered ${sent.status}.`);
   const { error } = await db.from("devices").update({ credit_requested_at: new Date().toISOString() }).eq("id", caller.id);
   if (error) throw error;
-  return Response.json({ sent: true });
+  return Response.json({ requested: true });
 }
 
 Deno.serve(async (request) => {
@@ -130,6 +118,6 @@ Deno.serve(async (request) => {
   if (blocked) return blocked;
   if (path.endsWith("/v1/messages")) return messages(request, caller);
   const voice = path.match(SPEECH_PATH)?.[1];
-  if (voice) return speech(request, voice);
+  if (voice) return speech(request, caller, voice);
   return failure(404, "not_found_error", `No route for ${path}.`);
 });

@@ -875,7 +875,7 @@ def out_of_credit() -> anthropic.APIStatusError:
     ("yes", False, main.CREDIT_ALREADY_ASKED),
     ("no", None, main.CREDIT_NOT_ASKED),
 ], ids=["asks for more", "had already asked", "declines"])
-def test_spent_credit_offers_one_email_to_the_owner(monkeypatch: pytest.MonkeyPatch, answer: str, asked: bool | None,
+def test_spent_credit_offers_one_request_to_the_owner(monkeypatch: pytest.MonkeyPatch, answer: str, asked: bool | None,
                                                      line: str) -> None:
     requests = []
 
@@ -887,7 +887,7 @@ def test_spent_credit_offers_one_email_to_the_owner(monkeypatch: pytest.MonkeyPa
     said: list[str] = []
     reply = asyncio.run(main.offer_more_credit(ScriptedEars(said, answer), NAMES))
     assert said == [main.OUT_OF_CREDIT] and reply == line, (said, reply)
-    assert len(requests) == (asked is not None), "the email goes only after a spoken yes"
+    assert len(requests) == (asked is not None), "the request goes only after a spoken yes"
 
 
 def test_a_command_that_runs_out_of_credit_offers_more(monkeypatch: pytest.MonkeyPatch) -> None:

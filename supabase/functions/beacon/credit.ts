@@ -4,7 +4,6 @@ export const DAILY_CEILING_USD = 50; // all devices together: a backstop if some
 export const NEW_DEVICES_PER_IP_PER_DAY = 3;
 export const MAX_OUTPUT_TOKENS = 4096; // Beacon's own largest request; also bounds how far one request can overshoot $1
 export const MAX_SPEECH_CHARACTERS = 1000;
-export const OWNER_EMAIL = "pieceluu10@gmail.com";
 
 const MILLION = 1_000_000;
 const HAIKU_LONG_PROMPT_TOKENS = 100_000; // Haiku 5.5 costs five times as much above this

@@ -39,8 +39,8 @@ STOPPED = "Stopped."
 CONFIRM_RETRY = "Sorry, yes or no?"
 CRASHED = "Something broke and I have to quit. The details are in the terminal."
 NO_MICROPHONE = "I can't hear the microphone. Allow it for this terminal in System Settings, then start me again."
-OUT_OF_CREDIT = "You've used your free dollar of Beacon. Want me to email Pierce and ask for more?"
-CREDIT_ASKED = "Done. Pierce will get back to you."
+OUT_OF_CREDIT = "You've used your free dollar of Beacon. Want me to ask Pierce for more?"
+CREDIT_ASKED = "Done. Pierce will see your request."
 CREDIT_ALREADY_ASKED = "You've already asked for more. Pierce has your note."
 CREDIT_NOT_ASKED = "Okay. Set your own ANTHROPIC_API_KEY to keep going."
 CREDIT_REQUEST_FAILED = "I couldn't send that. Try again later."
@@ -163,7 +163,7 @@ async def listen_while_working(ears: Ears, agent: Agent | MacAgent, side: Side, 
 
 
 async def offer_more_credit(ears: Ears, names: tuple[str, ...]) -> str:
-    """Once this Mac's free credit is spent: offer to email the owner for more, once, and say how it went."""
+    """Once this Mac's free credit is spent: offer to ask the owner for more, once, and say how it went."""
     if not await confirm(ears, OUT_OF_CREDIT, names):
         return CREDIT_NOT_ASKED
     try:
