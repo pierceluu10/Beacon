@@ -1,7 +1,7 @@
 // Run with: node --test supabase/functions/beacon/credit.test.ts
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { cost, CREDIT_USD, DAILY_CEILING_USD, isDevice, refusal } from "./credit.ts";
+import { callerId, cost, CREDIT_USD, DAILY_CEILING_USD, isDevice, refusal } from "./credit.ts";
 
 test("a typical Opus step with a cached prompt and a screenshot costs a few cents", () => {
   const usage = { input_tokens: 1800, cache_read_input_tokens: 9000, cache_creation_input_tokens: 0, output_tokens: 150 };
@@ -34,4 +34,12 @@ test("a device is refused once it reaches its credit, and everyone once the day'
   assert.equal(refusal(CREDIT_USD - 0.01, 0), null);
   assert.equal(refusal(CREDIT_USD, 0)?.status, 402);
   assert.equal(refusal(0, DAILY_CEILING_USD)?.status, 503);
+});
+
+test("the device id is read from x-api-key or, as the Anthropic SDK sends it, a Bearer token", () => {
+  const id = "3f2b8c1e-9a4d-4e6f-8b2a-1c3d5e7f9a0b";
+  assert.equal(callerId(new Headers({ "x-api-key": id })), id);
+  assert.equal(callerId(new Headers({ authorization: `Bearer ${id}` })), id);
+  assert.equal(callerId(new Headers({ authorization: `Basic ${id}` })), null);
+  assert.equal(callerId(new Headers()), null);
 });

@@ -1,8 +1,10 @@
-// Beacon's hosted keys: forwards Claude and ElevenLabs requests with the owner's keys and stops each Mac at $1 of Claude.
-// The device id arrives as x-api-key, which is where the Anthropic SDK puts its api_key.
+// Beacon's hosted keys: forwards Claude and ElevenLabs requests with the owner's keys, swaps in Beacon's stored prompts and
+// stops each Mac at $1 of Claude.
+// The device id arrives as the Anthropic SDK's api_key, or as x-api-key from the voice.
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
 import {
+  callerId,
   cost,
   CREDIT_USD,
   isDevice,
@@ -12,6 +14,7 @@ import {
   PRICES,
   refusal,
 } from "./credit.ts";
+import { UnknownPromptError, withPrompts } from "./prompt.ts";
 
 const ANTHROPIC_MESSAGES = "https://api.anthropic.com/v1/messages";
 const ELEVENLABS_SPEECH = "https://api.elevenlabs.io/v1/text-to-speech/";
@@ -29,7 +32,7 @@ function failure(status: number, type: string, message: string): Response {
 
 // The calling device, registering it on first sight, or the Response that refuses it.
 async function device(request: Request): Promise<Device | Response> {
-  const id = request.headers.get("x-api-key");
+  const id = callerId(request.headers);
   if (!isDevice(id)) return failure(401, "authentication_error", "Missing or malformed Beacon device id.");
   const { data: known, error } = await db.from("devices").select("id, spent_usd, credit_requested_at").eq("id", id)
     .maybeSingle();
@@ -49,6 +52,17 @@ async function device(request: Request): Promise<Device | Response> {
   return created;
 }
 
+const prompts = new Map<string, string | null>(); // per isolate: a prompt edit reaches new isolates within minutes
+
+async function storedPrompt(name: string): Promise<string | null> {
+  if (!prompts.has(name)) {
+    const { data, error } = await db.from("prompts").select("text").eq("name", name).maybeSingle();
+    if (error) throw error;
+    prompts.set(name, data?.text ?? null);
+  }
+  return prompts.get(name)!;
+}
+
 async function spentToday(): Promise<number> {
   const today = new Date().toISOString().slice(0, 10);
   const { data, error } = await db.from("daily_spend").select("usd").eq("day", today).maybeSingle();
@@ -66,6 +80,12 @@ async function messages(request: Request, caller: Device): Promise<Response> {
   if (!(body.model in PRICES)) return failure(400, "invalid_request_error", `Model ${body.model} is not offered.`);
   if (body.stream) return failure(400, "invalid_request_error", "Streaming is not offered.");
   body.max_tokens = Math.min(body.max_tokens ?? MAX_OUTPUT_TOKENS, MAX_OUTPUT_TOKENS);
+  try {
+    body.system = await withPrompts(body.system, storedPrompt);
+  } catch (error) {
+    if (error instanceof UnknownPromptError) return failure(400, "invalid_request_error", error.message);
+    throw error;
+  }
   const headers = new Headers({ "content-type": "application/json", "x-api-key": Deno.env.get("ANTHROPIC_API_KEY")! });
   for (const name of FORWARDED_ANTHROPIC_HEADERS) {
     const value = request.headers.get(name);

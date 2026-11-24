@@ -307,10 +307,9 @@ def test_a_stop_as_the_answer_to_a_question_ends_the_task_with_or_without_the_na
         print(f"{answer!r} was handed to the model as the answer {returned!r}")
 
 
-@pytest.mark.parametrize("prompt", [main.SYSTEM_PROMPT, main.MAC_PROMPT], ids=["browser", "whole Mac"])
-def test_the_longest_answer_the_prompt_allows_is_spoken_before_say_is_killed(prompt):
-    bounds = [int(words) for words in re.findall(r"under (\d+) words", prompt)]
-    assert bounds, "the prompt does not bound the length of the spoken answer"
+def test_the_longest_answer_the_settings_allow_is_spoken_before_say_is_killed():
+    bounds = [int(words) for words in re.findall(r"under (\d+) words", main.SETTINGS)]
+    assert bounds, "the settings sent with every prompt do not bound the length of the spoken answer"
     seconds = max(bounds) * 60 / int(mouth.SAY_WORDS_PER_MINUTE) * SPEECH_SLOWER_THAN_NOMINAL
     assert seconds < mouth.SAY_TIMEOUT_SECONDS, f"{max(bounds)} words take {seconds:.0f} s; say is killed after {mouth.SAY_TIMEOUT_SECONDS}"
 
