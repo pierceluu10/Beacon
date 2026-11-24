@@ -145,8 +145,8 @@ trusting the model:
 | `everyday.py` | Reads the address and title of the front tab of your everyday Chrome when that Chrome is the app in front. |
 | `front_tab.js` | The macOS script `everyday.py` runs. It addresses the Chrome in front by process id, because every Chrome answers to the same name. |
 | `menubar.py`, `menubar.swift`, `mark.png` | The menu bar item, its menu, the key recorder and the Memory window: a small native helper, compiled on first run (needs `xcode-select --install`). |
-| `mac.py`, `mac_prompt.txt` | The whole-Mac mode: screenshots, mouse and keyboard through Anthropic's computer toolset. |
-| `prompt.txt` | The system prompt for the browser modes. |
+| `mac.py` | The whole-Mac mode: screenshots, mouse and keyboard through Anthropic's computer toolset. |
+| `prompt.txt`, `mac_prompt.txt` | Short public prompts, for local testing with your own `ANTHROPIC_API_KEY`. On Beacon's free credit the server uses Beacon's own prompts instead. |
 
 ## Contributing
 

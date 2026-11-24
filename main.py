@@ -13,7 +13,7 @@ import sounddevice
 from mcp import MCPError
 
 import credit
-from agent import Agent, BrowserClosedError, BrowserLostError, BrowserStartError
+from agent import CACHED, Agent, BrowserClosedError, BrowserLostError, BrowserStartError
 from mac import MacAgent, MacPermissionError, request_permissions
 from memory import Memory
 from mouth import SPEAKING_STYLE, Mouth
@@ -25,7 +25,7 @@ CONFIG_PATH = HOME / "config.toml"
 MEMORY_NOTES = HOME / "memory.md"
 MEMORY_FOLDER = HOME / "memory"  # also the only folder the browser modes may upload from
 PROFILE_DIR = HOME / "chrome-profile"  # the agent's own Chrome profile
-MODEL = "claude-opus-5-5"
+MODEL = "claude-haiku-5-5"
 QUICK_MODEL = "claude-haiku-5-5"  # the greeting and replies while a task runs
 STT_MODEL = "MEDIUM_STREAMING"
 CONTINUATION_SECONDS = 0.8  # a pause mid-sentence puts 0.47 to 0.52 s between its two transcripts; 0.6 missed some under load
@@ -58,9 +58,17 @@ SPOKEN_ERRORS: dict[type[Exception], str] = {  # most specific first
     MicrophoneSilentError: NO_MICROPHONE,
     sounddevice.PortAudioError: NO_MICROPHONE,
 }
-SYSTEM_PROMPT = Path(__file__).with_name("prompt.txt").read_text()
-MAC_PROMPT = Path(__file__).with_name("mac_prompt.txt").read_text()
 WINDOW, CHROME, MAC = "window", "chrome", "mac"  # what it works in: its own Chrome window, your Chrome, or the whole Mac
+# The public prompts, for running on your own key; on Beacon's server its own stored prompts take their place
+PUBLIC_PROMPTS = {"browser": Path(__file__).with_name("prompt.txt").read_text(),
+                  "mac": Path(__file__).with_name("mac_prompt.txt").read_text()}
+HIDDEN_PROMPT = "<beacon:{name}>"
+SETTINGS = ("Your name is {agent_name}; never say it. Everything you write reaches the user through text-to-speech.\n"
+            "- When a request needs actions, begin your first reply with one short line, under 10 words, saying what you "
+            "are about to do, alongside your first actions. It is spoken at once; later text sent with actions is not.\n"
+            "- Your final message is under 35 words: at most two short plain sentences, no markdown, lists or addresses.\n"
+            "- {speaking_style}\n"
+            "- The user's files are in {memory_folder}.")
 
 
 class ConfigError(ValueError):
@@ -242,16 +250,23 @@ async def converse(ears: Ears, agent: Agent | MacAgent, side: Side, memory: Memo
                 command = ""  # the name alone in the follow-up window is a wake, not a command
 
 
+def system_prompt(name: str, agent_name: str, memory_folder: Path) -> list[dict]:
+    """The prompt, then this user's settings, cached together. On Beacon's server a marker stands in for the prompt, so
+    its text never reaches this Mac."""
+    prompt = HIDDEN_PROMPT.format(name=name) if credit.hosted() else PUBLIC_PROMPTS[name]
+    settings = SETTINGS.format(agent_name=agent_name, speaking_style=SPEAKING_STYLE, memory_folder=memory_folder)
+    return [{"type": "text", "text": prompt}, {"type": "text", "text": settings, "cache_control": CACHED}]
+
+
 def build_agent(config: Config, mode: str, ears: Ears, memory: Memory, headless: bool = False,
                 profile_dir: Path = PROFILE_DIR) -> Agent | MacAgent:
     profile_dir.mkdir(parents=True, exist_ok=True)
     memory.folder.mkdir(parents=True, exist_ok=True)
-    prompt = (MAC_PROMPT if mode == MAC else SYSTEM_PROMPT).format(agent_name=config.agent_name, memory_folder=memory.folder,
-                                                                   speaking_style=SPEAKING_STYLE)
+    system = system_prompt("mac" if mode == MAC else "browser", config.agent_name, memory.folder)
     asking = partial(ask, ears, names=config.names)
     if mode == MAC:
-        return MacAgent(MODEL, memory, prompt, asking, ears.say_later)
-    return Agent(MODEL, profile_dir, memory, prompt, frozenset(config.blocked_hosts) | ALWAYS_BLOCKED_HOSTS,
+        return MacAgent(MODEL, memory, system, asking, ears.say_later)
+    return Agent(MODEL, profile_dir, memory, system, frozenset(config.blocked_hosts) | ALWAYS_BLOCKED_HOSTS,
                  partial(confirm, ears, names=config.names), asking, ears.say_later, headless,
                  config.extension_token if mode == CHROME else "")
 

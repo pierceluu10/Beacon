@@ -18,7 +18,7 @@ uv run python main.py       # runs on this Mac's free $1; export ANTHROPIC_API_K
 
 ```bash
 uv run pytest                                           # everything in Python, free
-node --test supabase/functions/beacon/credit.test.ts    # the server's credit rules
+node --test supabase/functions/beacon/*.test.ts         # the server's credit and prompt rules
 ```
 
 The tests cost nothing and need no key, microphone or person: no test calls Claude or ElevenLabs, speech clips are

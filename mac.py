@@ -17,6 +17,7 @@ from memory import Memory
 TOOLSET = "computer"
 TOOLS = [{"type": "computer_toolset_20260801"}, ASK_TOOL]
 MAX_STEPS = 60
+KEPT_SCREENS = 10  # older ones turn stale, keeping a prompt under Haiku's 100K-token line
 STALE_SCREEN = "(older screenshot removed)"
 GLANCE = "glance.png"  # the capture for a quick reply, kept apart from the task's own
 OK = "OK"
@@ -196,10 +197,10 @@ def check_permissions() -> None:
 class MacAgent(Conversation):
     """One conversation that operates the whole Mac. Same surface as agent.Agent, so the voice loop does not care which."""
 
-    def __init__(self, model: str, memory: Memory, system_prompt: str, ask: Ask, narrate: Narrate) -> None:
+    def __init__(self, model: str, memory: Memory, system: list[dict], ask: Ask, narrate: Narrate) -> None:
         super().__init__(memory, narrate)
         self._model, self._ask = model, ask
-        self._system = [{"type": "text", "text": system_prompt, "cache_control": CACHED}]
+        self._system = system
         self._anthropic = claude(timeout=Timeout(REQUEST_TIMEOUT_SECONDS, connect=DEFAULT_TIMEOUT.connect))
         self._screens: list[dict] = []
 
@@ -228,10 +229,7 @@ class MacAgent(Conversation):
 
     async def run(self, command: str) -> str:
         """Carry out one spoken command and return the sentence to speak back. Cancel the task to interrupt it."""
-        for screen in self._screens:  # images are large: a command keeps its own screenshots and drops earlier ones
-            screen.clear()
-            screen.update(type="text", text=STALE_SCREEN)
-        self._screens.clear()
+        self._keep_screens(0)  # images are large: a command keeps only its own latest screenshots
         try:
             asked = f"{command}\n\n{NOW.format(now=datetime.now())}"
             self._messages.append(self._opening(command, [{"type": "text", "text": asked}]))
@@ -255,6 +253,14 @@ class MacAgent(Conversation):
             raise
         return OUT_OF_STEPS
 
+    def _keep_screens(self, count: int) -> None:
+        """Turn all but the newest count screenshots into a short note."""
+        stale = self._screens[:len(self._screens) - count]
+        for screen in stale:
+            screen.clear()
+            screen.update(type="text", text=STALE_SCREEN)
+        del self._screens[:len(stale)]
+
     async def _results(self, calls: list) -> list[dict]:
         """One tool result per call, in order; after a failed computer action the rest of the batch is not run."""
         results, failed = [], False
@@ -270,6 +276,7 @@ class MacAgent(Conversation):
                         raise MacActionError(NOT_EXECUTED)
                     result["content"] = await self._mac.act(call.name, call.input)
                     self._screens += [block for block in result["content"] if block["type"] == "image"]
+                    self._keep_screens(KEPT_SCREENS)
                 except (MacActionError, KeyError, TypeError, ValueError) as error:  # KeyError and co: a malformed call
                     failed = True
                     result |= {"is_error": True, "content": f"Error: {error}"}

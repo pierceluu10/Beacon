@@ -639,13 +639,15 @@ def test_the_api_client_gives_up_connecting_sooner_than_it_gives_up_on_a_reply(b
         f"an unreachable network would be silent for three attempts of {timeout}")
 
 
-def test_a_command_keeps_every_page_it_saw_and_the_next_command_drops_them(browser: Browser, model: Callable) -> None:
+def test_a_command_keeps_its_latest_pages_and_the_next_command_drops_them(
+        browser: Browser, model: Callable, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(agent, "KEPT_PAGES", 2)
     browser.open_form()
     requests = model(browser.model_calls(*click(NEXT_PAGE)), browser.model_calls(*click(FULL_NAME)), ALL_SET, ALL_SET)
     browser.run(browser.agent.run("open the next page and click into the name field"))
     browser.run(browser.agent.run("thanks"))
     kept = [pages_sent(request) for request in requests]
-    assert kept == [[True], [True, True], [True, True, True], [False, False, False, True]], (
+    assert kept == [[True], [True, True], [False, True, True], [False, False, False, True]], (
         f"which snapshots each request still held, oldest first: {kept}")
     uncached = [number for number, request in enumerate(requests) if request.get("cache_control") != CACHED]
     assert uncached == [], f"requests {uncached} re-pay the whole growing history at full price"

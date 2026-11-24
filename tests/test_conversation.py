@@ -18,7 +18,7 @@ import memory
 import menubar
 import mouth
 import side
-from agent import INTERRUPTED, SAID_STEP, SNAPSHOT_TOOL, USER_SAID
+from agent import CACHED, INTERRUPTED, SAID_STEP, SNAPSHOT_TOOL, USER_SAID
 from gate import url_refusal
 from memory import Memory
 
@@ -160,6 +160,7 @@ def test_the_greeting_is_written_from_the_notes() -> None:
     asyncio.run(quick.greet(""))
     sent = [request["messages"][0]["content"] for request in quick._anthropic.requests]
     assert NOTES in sent[0] and sent[1] == side.NO_NOTES, sent
+    assert all(request["thinking"] == side.NO_THINKING for request in quick._anthropic.requests), "thinking would eat the greeting"
 
 
 class ScriptedMac:
@@ -367,8 +368,26 @@ def test_every_prompt_that_writes_spoken_words_carries_the_speaking_style(tmp_pa
     """The task prompts, the greeting and the mid-task replies all write words that are spoken: they must sound the same."""
     built = main.build_agent(main.Config(), mode, SimpleNamespace(say_later=None), Memory(tmp_path / "notes.md", tmp_path / "files"),
                              profile_dir=tmp_path / "profile")
-    for prompt in (built._system[0]["text"], side.GREETING_PROMPT, side.REPLY_PROMPT):
+    for prompt in (built._system[-1]["text"], side.GREETING_PROMPT, side.REPLY_PROMPT):
         assert mouth.SPEAKING_STYLE in prompt, prompt
+
+
+@pytest.mark.parametrize("key", ["", "own-key"], ids=["on Beacon's server", "on your own key"])
+def test_on_beacons_server_the_prompt_never_reaches_this_mac(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, key: str) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", key)
+    prompt, settings = main.system_prompt("browser", "Beacon", tmp_path)
+    print(prompt, settings, sep="\n")
+    assert prompt == {"type": "text", "text": "<beacon:browser>" if not key else main.PUBLIC_PROMPTS["browser"]}, prompt
+    assert settings["cache_control"] == CACHED and "Your name is Beacon" in settings["text"], "the prompt and settings are cached as one"
+
+
+def test_a_task_keeps_only_its_latest_screenshots(remembered: Memory) -> None:
+    driver = mac.MacAgent(NEVER_SENT, remembered, [], lambda question: None, lambda line: None)
+    screens = [{"type": "image", "source": number} for number in range(3)]
+    driver._screens = list(screens)
+    driver._keep_screens(2)
+    assert screens[0] == {"type": "text", "text": mac.STALE_SCREEN} and screens[1:] == driver._screens, screens
+    assert [screen["source"] for screen in driver._screens] == [1, 2], driver._screens
 
 
 @pytest.mark.parametrize("region", [(0, 0, 200, 351), (10, 10, 900, 60), None], ids=["tall zoom", "wide zoom", "screen"])

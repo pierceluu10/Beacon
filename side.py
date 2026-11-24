@@ -7,6 +7,7 @@ from mouth import SPEAKING_STYLE
 
 GREETING_TOKENS = 60
 REPLY_TOKENS = 300
+NO_THINKING = {"type": "disabled"}  # Haiku thinks by default, which would use up the greeting's few tokens and its second
 CONTINUE, CHANGE, STOP = "continue", "change", "stop"
 GREETING_PROMPT = ("You are {agent_name}, a voice assistant that uses the user's computer for them. You have just started up. "
                    "Say one short, warm line of at most 8 words, like \"Hey Sam, what are we doing today?\": greet the user, "
@@ -54,6 +55,7 @@ class Side:
     async def greet(self, notes: str) -> str:
         reply = await self._anthropic.messages.create(
             model=self._model, max_tokens=GREETING_TOKENS, system=GREETING_PROMPT.format(agent_name=self._agent_name),
+            thinking=NO_THINKING,
             messages=[{"role": "user", "content": NOTES.format(notes=notes) if notes.strip() else NO_NOTES}])
         return " ".join(block.text for block in reply.content if block.type == "text").strip()
 

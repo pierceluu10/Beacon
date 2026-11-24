@@ -63,7 +63,9 @@ KEPT_BLOCK_TYPES = ("text", "tool_use")  # thinking blocks are bound to the uned
 CACHED = {"type": "ephemeral"}
 MAX_TOKENS = 4096
 REQUEST_TIMEOUT_SECONDS = 60
-MAX_STEPS = 40  # a command keeps every snapshot it took; 40 of the largest still fit the context window
+MAX_STEPS = 40
+# A command keeps only its latest snapshots: 4 of the largest stay under Haiku's 100K-token line, above which it costs 5x
+KEPT_PAGES = 4
 WARMUP = "warmup"
 DECLINED = "The user said no. Do not retry or work around it. Stop and tell the user what you left undone."
 NO_ANSWER = "The user did not answer."
@@ -167,7 +169,7 @@ class Conversation:
 class Agent(Conversation):
     """One browser, one conversation. Use as an async context manager."""
 
-    def __init__(self, model: str, profile_dir: Path, memory: Memory, system_prompt: str, blocked_hosts: frozenset[str],
+    def __init__(self, model: str, profile_dir: Path, memory: Memory, system: list[dict], blocked_hosts: frozenset[str],
                  confirm: Confirm, ask: Ask, narrate: Narrate, headless: bool = False, extension_token: str = "") -> None:
         super().__init__(memory, narrate)
         self._model, self._blocked_hosts, self._confirm, self._ask = model, blocked_hosts, confirm, ask
@@ -175,7 +177,7 @@ class Agent(Conversation):
         self._profile_dir = profile_dir
         self._in_own_chrome = bool(extension_token)  # a tab in the user's own Chrome instead of a window with its own profile
         own_window = ["--browser", "chrome", "--user-data-dir", str(profile_dir), *(["--headless"] if headless else [])]
-        self._system = [{"type": "text", "text": system_prompt, "cache_control": CACHED}]
+        self._system = system
         # cwd is the server's only upload root; --output-dir keeps its own files out of it.
         self._server = StdioServerParameters(
             command="npx", cwd=str(upload_dir), env={EXTENSION_TOKEN_VARIABLE: extension_token} if extension_token else None,
@@ -237,7 +239,7 @@ class Agent(Conversation):
     async def run(self, command: str) -> str:
         """Carry out one spoken command and return the sentence to speak back. Cancel the task to interrupt it."""
         self._on_page = False
-        for page in self._pages:  # a command keeps the pages it saw, or the model forgets why it acted and redoes the step
+        for page in self._pages:  # a command keeps its latest pages, or the model forgets why it acted and redoes the step
             page["text"] = STALE_SNAPSHOT
         self._pages.clear()
         try:
@@ -309,6 +311,8 @@ class Agent(Conversation):
 
     def _page_block(self, snapshot: str) -> dict:
         self._pages.append({"type": "text", "text": snapshot})
+        if len(self._pages) > KEPT_PAGES:
+            self._pages.pop(0)["text"] = STALE_SNAPSHOT
         return self._pages[-1]
 
     async def _use(self, tool: str, arguments: dict) -> str:

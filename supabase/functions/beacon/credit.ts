@@ -37,6 +37,11 @@ export function isDevice(id: string | null): id is string {
   return id !== null && DEVICE.test(id);
 }
 
+// The voice sends the device id as x-api-key; the Anthropic SDK sends its api_key as a Bearer token.
+export function callerId(headers: Headers): string | null {
+  return headers.get("x-api-key") ?? headers.get("authorization")?.match(/^Bearer (\S+)$/)?.[1] ?? null;
+}
+
 // Why a request is refused before it costs anything, or null to let it through.
 export function refusal(spent: number, spentToday: number): { status: number; type: string; message: string } | null {
   if (spent >= CREDIT_USD) {
