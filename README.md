@@ -43,7 +43,7 @@ Beacon: "Got it, Saturday."
 - macOS on Apple silicon, with the Xcode command line tools (`xcode-select --install`)
 - Python 3.12 and [uv](https://docs.astral.sh/uv/)
 
-No API keys: every Mac gets $1 of free credit, and when it runs out Beacon offers to ask for more.
+No API keys needed.
 
 ## Quick start
 
@@ -55,7 +55,7 @@ uv run python main.py
 
 On first launch Beacon asks for everything it needs at once: the microphone, Screen Recording and Accessibility,
 all for the terminal you ran it from. Allow each one, quit and reopen the terminal (macOS applies Screen Recording
-only after a restart), and start Beacon again. Then **hold ⌥Space** (the default key) and talk.
+only after a restart), and start Beacon again. Then **hold ⌥Space** (default key) and talk.
 
 ## Usage
 
@@ -98,9 +98,6 @@ Optional, in `~/.beacon/config.toml`:
 
 | Key | Meaning |
 |---|---|
-| `agent_name` | The wake name instead of "Beacon"; one word, no training. |
-| `wake_aliases` | Other spellings the recogniser produces for that name. |
-| `blocked_hosts` | Sites it may never open, for example `["mybank.com"]`. |
 | `extension_token` | For **My Chrome** (above). |
 
 ## Security
@@ -150,13 +147,6 @@ trusting the model:
 | `menubar.py`, `menubar.swift`, `mark.png` | The menu bar item, its menu, the key recorder and the Memory window: a small native helper, compiled on first run (needs `xcode-select --install`). |
 | `mac.py`, `mac_prompt.txt` | The whole-Mac mode: screenshots, mouse and keyboard through Anthropic's computer toolset. |
 | `prompt.txt` | The system prompt for the browser modes. |
-
-## Known limitations
-
-- The whole-Mac mode has no gate: it asks nothing before acting. Stop it by voice or the key.
-- In the browser modes a hostile page can still disguise a pay step, and secrets you type inside embedded card
-  forms are not hidden. Keep banking and main email out of its profile.
-- $1 of Claude is roughly 30 to 80 steps on the whole Mac. Set your own `ANTHROPIC_API_KEY` to go past it.
 
 ## Contributing
 
