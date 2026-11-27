@@ -1,5 +1,6 @@
 """Beacon: say its name or hold the push-to-talk key, speak, and watch it use your computer."""
 import asyncio
+import itertools
 import sys
 import time
 import tomllib
@@ -37,6 +38,9 @@ CONFIRM_ATTEMPTS = 2
 ASK_SECONDS = 180
 FORGET_AFTER_SECONDS = 600
 ALWAYS_BLOCKED_HOSTS = frozenset({"linkedin.com"})  # its terms forbid automating it; added to any blocked_hosts in the config
+ACKNOWLEDGE_AFTER_SECONDS = 0.4  # long enough to skip it when the work is already done, short enough to feel instant
+QUESTION_STARTS = ("what", "when", "where", "who", "which", "how", "why", "is ", "are ", "does ", "did ")
+ACKNOWLEDGEMENTS = {True: ("Let me check.", "Looking now.", "One sec."), False: ("On it.", "Sure.", "Got it.", "Okay.")}
 STOPPED = "Stopped."
 CONFIRM_RETRY = "Sorry, yes or no?"
 CRASHED = "Something broke and I have to quit. The details are in the terminal."
@@ -69,6 +73,8 @@ SETTINGS = ("Your name is {agent_name}; never say it. Everything you write reach
             "- When a request needs actions, begin your first reply with one short line, under 10 words, saying what you "
             "are about to do, alongside your first actions. It is spoken at once; later text sent with actions is not.\n"
             "- Your final message is under 35 words: at most two short plain sentences, no markdown, lists or addresses.\n"
+            "- For the calendar, reminders, notes, music, texts, email, volume and opening apps, use their own tools: "
+            "they answer at once, where the screen or browser takes many steps.\n"
             "- {speaking_style}\n"
             "- The user's files are in {memory_folder}.")
 
@@ -95,6 +101,15 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
     if unknown:
         raise ConfigError(f"Unknown keys in {path}: {sorted(unknown)}")
     return Config(**values)
+
+
+_acknowledgements = {question: itertools.cycle(lines) for question, lines in ACKNOWLEDGEMENTS.items()}
+
+
+def acknowledgement(command: str) -> str:
+    """A short line said at once, so the user knows they were heard: "Let me check." for a question, "On it." otherwise,
+    taking turns so it does not sound canned."""
+    return next(_acknowledgements[command.lower().startswith(QUESTION_STARTS)])
 
 
 def spoken_error(error: Exception) -> str:
@@ -196,6 +211,8 @@ async def carry_out(agent: Agent | MacAgent, ears: Ears, side: Side, command: st
 
     timing.command.set(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {command}")  # the tasks below inherit it
     work = asyncio.create_task(agent.run(command))
+    acknowledging = asyncio.get_running_loop().call_later(ACKNOWLEDGE_AFTER_SECONDS, ears.say_later,
+                                                          acknowledgement(command))
     watcher = asyncio.create_task(listen_while_working(ears, agent, side, stop, names, in_hand))
     ears.working = True
     try:
@@ -215,6 +232,7 @@ async def carry_out(agent: Agent | MacAgent, ears: Ears, side: Side, command: st
             await agent.restart()  # here, in the conversation's task, which entered the agent
         return spoken_error(error), None
     finally:
+        acknowledging.cancel()
         ears.working = False
         ears.hush()  # a line the task queued to speak is out of date once it ends
         watcher.cancel()
@@ -268,7 +286,7 @@ def build_agent(config: Config, mode: str, ears: Ears, memory: Memory, headless:
     system = system_prompt("mac" if mode == MAC else "browser", config.agent_name, memory.folder)
     asking = partial(ask, ears, names=config.names)
     if mode == MAC:
-        return MacAgent(MODEL, memory, system, asking, ears.say_later)
+        return MacAgent(MODEL, memory, system, partial(confirm, ears, names=config.names), asking, ears.say_later)
     return Agent(MODEL, profile_dir, memory, system, frozenset(config.blocked_hosts) | ALWAYS_BLOCKED_HOSTS,
                  partial(confirm, ears, names=config.names), asking, ears.say_later, headless,
                  config.extension_token if mode == CHROME else "")
@@ -281,6 +299,7 @@ async def main(started: Callable[[Ears], None] = lambda ears: None, mode: str = 
     memory = Memory(MEMORY_NOTES.resolve(), MEMORY_FOLDER.resolve())
     request_permissions()  # every macOS prompt at once, on the first launch, rather than one per failure later
     async with Mouth() as mouth:
+        preparing = asyncio.create_task(mouth.prepare([*itertools.chain(*ACKNOWLEDGEMENTS.values()), STOPPED, CONFIRM_RETRY]))
         try:
             async with (Ears(STT_MODEL, list(config.names), mouth, wake) as ears,
                         build_agent(config, mode, ears, memory) as agent, Side(QUICK_MODEL, config.agent_name) as side):
@@ -300,6 +319,8 @@ async def main(started: Callable[[Ears], None] = lambda ears: None, mode: str = 
         except Exception:
             await mouth.speak(CRASHED)
             raise
+        finally:
+            preparing.cancel()
 
 
 if __name__ == "__main__":

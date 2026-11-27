@@ -12,6 +12,7 @@ from types import SimpleNamespace
 import pytest
 
 import everyday
+import mouth
 
 SITE = Path(__file__).with_name("site")
 CROSS_ORIGIN_PORT_PLACEHOLDER = "8772"
@@ -103,6 +104,13 @@ def scratch_home(home: Path) -> Iterator[Path]:
         yield home
     finally:
         shutil.rmtree(home / "profile", ignore_errors=True)  # a Chrome profile is tens of megabytes
+
+
+@pytest.fixture(autouse=True)
+def voice_cache(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    """Every test gets its own empty voice cache, so fake audio never reaches ~/.beacon/voice."""
+    monkeypatch.setattr(mouth, "VOICE_CACHE", tmp_path / "voice")
+    return tmp_path / "voice"
 
 
 @pytest.fixture

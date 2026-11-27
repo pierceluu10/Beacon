@@ -23,6 +23,10 @@ from gate import url_refusal
 from memory import Memory
 
 NEVER_SENT = "never sent: these tests make no API request"
+
+
+async def NO_CONFIRM(question: str) -> bool:
+    raise AssertionError(f"asked {question!r}, but nothing here needs a yes")
 NOTES = "My name is Sam. Keep replies short."
 PNG = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")
 PDF = b"%PDF-1.4\n%%EOF\n"
@@ -180,7 +184,7 @@ class ScriptedMac:
 def test_a_running_task_speaks_its_first_line_reads_memory_once_and_takes_words_said_mid_task(remembered: Memory) -> None:
     remembered.notes_path.write_text(NOTES)
     narrated: list[str] = []
-    driver = mac.MacAgent(NEVER_SENT, remembered, "prompt", lambda question: None, narrated.append)
+    driver = mac.MacAgent(NEVER_SENT, remembered, "prompt", NO_CONFIRM, lambda question: None, narrated.append)
     driver._mac = ScriptedMac(driver, "use Gmail, not Outlook")
     driver._anthropic = ScriptedAnthropic(
         reply("tool_use", text("Opening your mail."), tool_use("left_click", {"coordinate": [1, 2]}, 1)),
@@ -201,7 +205,7 @@ def test_a_running_task_speaks_its_first_line_reads_memory_once_and_takes_words_
 
 
 def test_words_that_arrive_as_the_task_finishes_carry_it_on(remembered: Memory) -> None:
-    driver = mac.MacAgent(NEVER_SENT, remembered, "prompt", lambda question: None, lambda line: None)
+    driver = mac.MacAgent(NEVER_SENT, remembered, "prompt", NO_CONFIRM, lambda question: None, lambda line: None)
     driver._anthropic = ScriptedAnthropic(reply("end_turn", text("Opened Notes.")), reply("end_turn", text("Added it.")))
     original = driver._anthropic.messages.create
 
@@ -233,7 +237,7 @@ def writing_forever(driver: mac.MacAgent) -> asyncio.Event:
 
 
 def test_words_said_while_the_model_writes_a_step_drop_that_step_and_reach_the_model_at_once(remembered: Memory) -> None:
-    driver = mac.MacAgent(NEVER_SENT, remembered, "prompt", lambda question: None, lambda line: None)
+    driver = mac.MacAgent(NEVER_SENT, remembered, "prompt", NO_CONFIRM, lambda question: None, lambda line: None)
     driver._anthropic = ScriptedAnthropic(reply("end_turn", text("Opened Gmail.")))
     writing = writing_forever(driver)
 
@@ -250,7 +254,7 @@ def test_words_said_while_the_model_writes_a_step_drop_that_step_and_reach_the_m
 
 
 def test_a_stop_while_the_model_writes_a_step_ends_the_task(remembered: Memory) -> None:
-    driver = mac.MacAgent(NEVER_SENT, remembered, "prompt", lambda question: None, lambda line: None)
+    driver = mac.MacAgent(NEVER_SENT, remembered, "prompt", NO_CONFIRM, lambda question: None, lambda line: None)
     driver._anthropic = ScriptedAnthropic()
     writing = writing_forever(driver)
 
@@ -363,6 +367,51 @@ def test_without_a_key_the_voice_goes_through_beacons_server_as_this_mac(monkeyp
     assert request.headers["x-api-key"] == credit.device_id() and "xi-api-key" not in request.headers
 
 
+def test_a_short_line_plays_from_the_cache_the_second_time_and_a_long_one_is_never_kept(
+        monkeypatch: pytest.MonkeyPatch, voice_cache: Path) -> None:
+    sent, played = [], []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        sent.append(json.loads(request.content)["text"])
+        return httpx2.Response(200, content=b"\x01\x02\x03\x04")
+
+    monkeypatch.setattr(mouth.sounddevice, "RawOutputStream", fake_speakers(played))
+    long_line = "x" * (mouth.CACHED_CHARACTERS + 1)
+    voice = stream(handler)
+    for line in ("On it.", "On it.", long_line, long_line):
+        asyncio.run(voice.speak(line))
+    print(sent, list(voice_cache.iterdir()))
+    assert sent == ["On it.", long_line, long_line], sent
+    assert [clip.name for clip in voice_cache.iterdir()] == [mouth.clip_path("On it.").name]
+    assert played.count(b"\x01\x02\x03\x04") == 4, played  # the cached line sounds the same as the streamed one
+
+
+def test_a_refused_line_is_not_cached(monkeypatch: pytest.MonkeyPatch, voice_cache: Path) -> None:
+    monkeypatch.setattr(mouth, "say", lambda text, voice: asyncio.sleep(0))
+    asyncio.run(stream(lambda request: httpx2.Response(500)).speak("On it."))
+    assert not voice_cache.exists() or not any(voice_cache.iterdir())
+
+
+def test_prepare_fetches_lines_without_playing_them_and_the_cache_keeps_the_most_recent(
+        monkeypatch: pytest.MonkeyPatch, voice_cache: Path) -> None:
+    monkeypatch.setattr(mouth, "CACHED_CLIPS", 2)
+    monkeypatch.setattr(mouth.sounddevice, "RawOutputStream", lambda **settings: pytest.fail("prepare played audio"))
+    voice = stream(lambda request: httpx2.Response(200, content=b"\x01\x02"))
+    asyncio.run(voice.prepare(["One.", "Two.", "Three."]))
+    kept = sorted(clip.name for clip in voice_cache.glob("*.pcm"))
+    print(kept)
+    assert kept == sorted(mouth.clip_path(line).name for line in ("Two.", "Three.")), kept
+    assert not list(voice_cache.glob("*.part"))
+
+
+def test_the_acknowledgement_fits_the_command_and_takes_turns() -> None:
+    questions = [main.acknowledgement("What's the weather") for _ in range(3)]
+    orders = [main.acknowledgement("open YouTube") for _ in range(4)]
+    print(questions, orders)
+    assert sorted(questions) == sorted(main.ACKNOWLEDGEMENTS[True]), questions
+    assert sorted(orders) == sorted(main.ACKNOWLEDGEMENTS[False]), orders
+
+
 @pytest.mark.parametrize("mode", [main.WINDOW, main.MAC])
 def test_every_prompt_that_writes_spoken_words_carries_the_speaking_style(tmp_path: Path, mode: str) -> None:
     """The task prompts, the greeting and the mid-task replies all write words that are spoken: they must sound the same."""
@@ -382,7 +431,7 @@ def test_on_beacons_server_the_prompt_never_reaches_this_mac(monkeypatch: pytest
 
 
 def test_a_task_keeps_only_its_latest_screenshots(remembered: Memory) -> None:
-    driver = mac.MacAgent(NEVER_SENT, remembered, [], lambda question: None, lambda line: None)
+    driver = mac.MacAgent(NEVER_SENT, remembered, [], NO_CONFIRM, lambda question: None, lambda line: None)
     screens = [{"type": "image", "source": number} for number in range(3)]
     driver._screens = list(screens)
     driver._keep_screens(2)

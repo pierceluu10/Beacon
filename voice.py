@@ -7,7 +7,7 @@ from difflib import SequenceMatcher
 
 import sounddevice
 from moonshine_voice import MicTranscriber, ModelArch
-from moonshine_voice.transcriber import LineCompleted, LineStarted, TranscriptEvent
+from moonshine_voice.transcriber import LineCompleted, LineStarted, LineTextChanged, TranscriptEvent
 
 from mouth import Mouth, chime
 
@@ -114,6 +114,12 @@ def barges_in(transcript: str, spoken: str, names: tuple[str, ...]) -> bool:
     return wakes_or_stops and not is_echo(transcript, spoken)
 
 
+def triggers_in(spoken: str, names: tuple[str, ...]) -> bool:
+    """True when a line Beacon says has a name or a stop word in it, which its echo could be mistaken for."""
+    words = re.findall(r"[a-z']+", spoken.lower())
+    return any(_is_name(word, names) for word in words) or bool(re.search(STOP_WORD, " ".join(words)))
+
+
 class Heard(str):
     """An utterance; pushed is True when it was spoken with the push-to-talk key held, so it is meant for Beacon."""
 
@@ -146,6 +152,7 @@ class Ears:
         self._talking = False
         self._spoken = ""  # the line being spoken, to tell its echo from the user
         self._barged: Heard | None = None  # a barge-in nobody was listening for yet, kept for the next hear
+        self._cut_early = False  # a line still being said cut Beacon off; its whole text is delivered when it ends
         self._unfinished = ""  # a line that stopped mid-clause, waiting for the rest
         self._unfinished_timer: asyncio.TimerHandle | None = None
         self._pushing = False
@@ -243,6 +250,8 @@ class Ears:
     def _on_event(self, event: TranscriptEvent) -> None:  # transcriber thread, or this loop's during stop()
         if isinstance(event, LineStarted):
             self._loop.call_soon_threadsafe(self._line_started)
+        elif isinstance(event, LineTextChanged) and self._talking:
+            self._loop.call_soon_threadsafe(self._partial, event.line.text.strip())
         elif isinstance(event, LineCompleted):
             self._loop.call_soon_threadsafe(self._deliver, event.line.text.strip(), self._pushing, self._talking)
 
@@ -251,6 +260,14 @@ class Ears:
         if self._unfinished_timer:  # the rest is coming
             self._unfinished_timer.cancel()
             self._unfinished_timer = None
+
+    def _partial(self, text: str) -> None:
+        """The name or a stop cuts Beacon off as soon as it is heard, not once the user has finished the sentence. A
+        transcript in progress is a rough guess, too rough to tell from Beacon's own echo, so while Beacon says the name
+        or a stop word itself, the finished transcript decides instead."""
+        if self._talking and not triggers_in(self._spoken, self._names) and barges_in(text, self._spoken, self._names):
+            self._cut_early = True
+            self.hush()
 
     def _deliver(self, text: str, pushed: bool, talking: bool) -> None:
         if pushed:
@@ -264,6 +281,7 @@ class Ears:
             self._mic.start()
         if talking:
             self._quiet.set()
+            self._cut_early = False
             if barges_in(text, self._spoken, self._names):
                 self.hush()
                 if not self._hand(Heard(text)):
@@ -276,7 +294,9 @@ class Ears:
             self._unfinished_timer = self._loop.call_later(UNFINISHED_PAUSE_SECONDS, self._hand_unfinished)
             return
         self._quiet.set()
-        self._hand(Heard(text))
+        if not self._hand(Heard(text)) and self._cut_early:
+            self._barged = Heard(text)
+        self._cut_early = False
 
     def _hand_unfinished(self) -> None:
         if self._unfinished_timer:
@@ -342,12 +362,15 @@ class Ears:
             finally:
                 speech.cancel()
                 await asyncio.wait({speech})  # lets the speakers or `say` close
-                if self._running:  # the echo still in the recogniser is delivered as heard while talking, so it is filtered
+                # The echo still in the recogniser is delivered as heard while talking, so it is filtered; but after an
+                # early cut-off the line in progress is the user's, and a restart would split it.
+                if self._running and not self._cut_early:
                     self._mic.stop()
                     self._mic.start()
                 self._speech = None
                 self._talking = False
-                self._quiet.set()
+                if not self._cut_early:  # otherwise the user is mid-line, and its end sets the quiet
+                    self._quiet.set()
 
     def say_later(self, text: str) -> None:
         """Speak a line without waiting for it, after anything already being said; hush drops it."""
