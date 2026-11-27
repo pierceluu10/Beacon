@@ -4,11 +4,13 @@ import asyncio
 import contextlib
 import os
 import sys
+import time
 
 import httpx2
 import sounddevice
 
 from credit import SERVER, device_id
+from timing import span
 
 SAY = "/usr/bin/say"
 SAY_VOICE = "Samantha"
@@ -95,6 +97,11 @@ class Mouth:
 
     async def _stream(self, text: str) -> None:
         """Play the voice as it streams in; the first audio arrives a few hundred milliseconds after the request."""
+        with span("speech", characters=len(text)) as fields:
+            await self._play(text, fields)
+
+    async def _play(self, text: str, fields: dict) -> None:
+        start = time.perf_counter()
         async with elevenlabs_request(self._http, self._key, text) as response:
             response.raise_for_status()
             speakers = sounddevice.RawOutputStream(samplerate=OUTPUT_RATE, channels=1, dtype="int16")
@@ -105,6 +112,7 @@ class Mouth:
                     audio = partial + chunk
                     whole = len(audio) - len(audio) % SAMPLE_BYTES  # a chunk can end in the middle of a sample
                     partial = audio[whole:]
+                    fields.setdefault("first_audio", round(time.perf_counter() - start, 3))
                     await asyncio.to_thread(speakers.write, audio[:whole])
                 await asyncio.to_thread(speakers.write, QUIET_TAIL)
                 await asyncio.to_thread(speakers.stop)  # returns once the last of it has been played

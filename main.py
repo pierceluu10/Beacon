@@ -1,6 +1,7 @@
 """Beacon: say its name or hold the push-to-talk key, speak, and watch it use your computer."""
 import asyncio
 import sys
+import time
 import tomllib
 from collections.abc import Callable
 from dataclasses import dataclass, field, fields
@@ -13,6 +14,7 @@ import sounddevice
 from mcp import MCPError
 
 import credit
+import timing
 from agent import CACHED, Agent, BrowserClosedError, BrowserLostError, BrowserStartError
 from mac import MacAgent, MacPermissionError, request_permissions
 from memory import Memory
@@ -192,6 +194,7 @@ async def carry_out(agent: Agent | MacAgent, ears: Ears, side: Side, command: st
         stopped.append(line)
         work.cancel()
 
+    timing.command.set(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {command}")  # the tasks below inherit it
     work = asyncio.create_task(agent.run(command))
     watcher = asyncio.create_task(listen_while_working(ears, agent, side, stop, names, in_hand))
     ears.working = True

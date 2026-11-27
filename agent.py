@@ -17,6 +17,7 @@ import everyday
 from credit import claude
 from gate import ALLOW, UNREADABLE, Verdict, blocked, judge, judge_dialog, to_inspect, url_refusal
 from memory import Memory
+from timing import span
 
 PLAYWRIGHT_MCP = "@playwright/mcp@0.0.86"
 EXTENSION_TOKEN_VARIABLE = "PLAYWRIGHT_MCP_EXTENSION_TOKEN"  # with it the Playwright Extension connects without a dialog
@@ -61,7 +62,9 @@ SNAPSHOT_CHARACTER_LIMIT = 40_000
 SNAPSHOT_CUT = "\n(snapshot cut off here; use browser_find to locate anything below)"
 KEPT_BLOCK_TYPES = ("text", "tool_use")  # thinking blocks are bound to the unedited history, which pruning rewrites
 CACHED = {"type": "ephemeral"}
+USAGE_FIELDS = {"input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"}
 MAX_TOKENS = 4096
+OUTPUT = {"effort": "low"}  # Haiku thinks less per step: most steps are a click, not a puzzle
 REQUEST_TIMEOUT_SECONDS = 60
 MAX_STEPS = 40
 # A command keeps only its latest snapshots: 4 of the largest stay under Haiku's 100K-token line, above which it costs 5x
@@ -141,7 +144,10 @@ class Conversation:
         the history in its place."""
         self._thinking = asyncio.ensure_future(request)
         try:
-            return await self._thinking
+            with span("model") as fields:
+                reply = await self._thinking
+                fields.update(reply.usage.model_dump(include=USAGE_FIELDS), stop=reply.stop_reason)
+            return reply
         except asyncio.CancelledError:
             if asyncio.current_task().cancelling():  # a stop, not tell()
                 raise
@@ -223,6 +229,7 @@ class Agent(Conversation):
     async def warm_up(self) -> None:
         """Writes the prompt cache and opens the connection: the first request of a process is the slow one."""
         await self._anthropic.messages.create(model=self._model, max_tokens=0, system=self._system, tools=self._tools,
+                                              output_config=OUTPUT,
                                               messages=[{"role": "user", "content": WARMUP}])
 
     def forget(self) -> None:
@@ -250,7 +257,7 @@ class Agent(Conversation):
             self._messages.append(self._opening(command, [{"type": "text", "text": asked}, self._page_block(snapshot)]))
             for _ in range(MAX_STEPS):
                 reply = await self._step(self._anthropic.messages.create(
-                    model=self._model, max_tokens=MAX_TOKENS, system=self._system, tools=self._tools,
+                    model=self._model, max_tokens=MAX_TOKENS, system=self._system, tools=self._tools, output_config=OUTPUT,
                     messages=self._messages, cache_control=CACHED))
                 if reply is None:
                     continue
@@ -329,7 +336,8 @@ class Agent(Conversation):
             return verdict.text
         if verdict.decision == "ask" and not await self._confirm(verdict.text):
             return DECLINED
-        return await self._call(tool, arguments) or NOTHING_TO_SAY
+        with span("browser", tool=tool):
+            return await self._call(tool, arguments) or NOTHING_TO_SAY
 
     async def _verdict(self, tool: str, arguments: dict) -> Verdict:
         refusal = url_refusal(arguments["url"], self._blocked_hosts) if "url" in arguments else None

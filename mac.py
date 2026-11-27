@@ -9,10 +9,11 @@ import Quartz
 from anthropic import DEFAULT_TIMEOUT, Timeout
 from ApplicationServices import AXIsProcessTrustedWithOptions, kAXTrustedCheckOptionPrompt
 
-from agent import (ASK_TOOL, CACHED, INTERRUPTED, KEPT_BLOCK_TYPES, MAX_TOKENS, NO_ANSWER, NOW, OUT_OF_STEPS,
+from agent import (ASK_TOOL, CACHED, OUTPUT, INTERRUPTED, KEPT_BLOCK_TYPES, MAX_TOKENS, NO_ANSWER, NOW, OUT_OF_STEPS,
                    REQUEST_TIMEOUT_SECONDS, WARMUP, Ask, Conversation, Narrate)
 from credit import claude
 from memory import Memory
+from timing import span
 
 TOOLSET = "computer"
 TOOLS = [{"type": "computer_toolset_20260801"}, ASK_TOOL]
@@ -214,6 +215,7 @@ class MacAgent(Conversation):
 
     async def warm_up(self) -> None:
         await self._anthropic.messages.create(model=self._model, max_tokens=0, system=self._system, tools=TOOLS,
+                                              output_config=OUTPUT,
                                               messages=[{"role": "user", "content": WARMUP}])
 
     def forget(self) -> None:
@@ -235,7 +237,7 @@ class MacAgent(Conversation):
             self._messages.append(self._opening(command, [{"type": "text", "text": asked}]))
             for _ in range(MAX_STEPS):
                 reply = await self._step(self._anthropic.messages.create(
-                    model=self._model, max_tokens=MAX_TOKENS, system=self._system, tools=TOOLS,
+                    model=self._model, max_tokens=MAX_TOKENS, system=self._system, tools=TOOLS, output_config=OUTPUT,
                     messages=self._messages, cache_control=CACHED))
                 if reply is None:
                     continue
@@ -274,7 +276,8 @@ class MacAgent(Conversation):
                 try:
                     if failed:
                         raise MacActionError(NOT_EXECUTED)
-                    result["content"] = await self._mac.act(call.name, call.input)
+                    with span("computer", action=call.name):
+                        result["content"] = await self._mac.act(call.name, call.input)
                     self._screens += [block for block in result["content"] if block["type"] == "image"]
                     self._keep_screens(KEPT_SCREENS)
                 except (MacActionError, KeyError, TypeError, ValueError) as error:  # KeyError and co: a malformed call
