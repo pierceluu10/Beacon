@@ -1,6 +1,7 @@
 """Claude driving a visible Chrome through the Playwright MCP server. Every browser call passes the gate first."""
 import asyncio
 import json
+import os
 import re
 from collections.abc import Awaitable, Callable
 from contextlib import AsyncExitStack
@@ -21,6 +22,7 @@ from memory import Memory
 from timing import span
 
 PLAYWRIGHT_MCP = "@playwright/mcp@0.0.86"
+PLAYWRIGHT_CLI = "BEACON_PLAYWRIGHT"  # Beacon.app sets it to the copy of PLAYWRIGHT_MCP it carries, run by its own node
 EXTENSION_TOKEN_VARIABLE = "PLAYWRIGHT_MCP_EXTENSION_TOKEN"  # with it the Playwright Extension connects without a dialog
 CURRENT_TAB = re.compile(r"^- (\d+): \(current\)", re.MULTILINE)
 NAVIGATION_TIMEOUT_MILLISECONDS = "20000"
@@ -186,9 +188,12 @@ class Agent(Conversation):
         own_window = ["--browser", "chrome", "--user-data-dir", str(profile_dir), *(["--headless"] if headless else [])]
         self._system = system
         # cwd is the server's only upload root; --output-dir keeps its own files out of it.
+        bundled = os.environ.get(PLAYWRIGHT_CLI)
+        command, server = ("node", [bundled]) if bundled else ("npx", ["-y", PLAYWRIGHT_MCP])
         self._server = StdioServerParameters(
-            command="npx", cwd=str(upload_dir), env={EXTENSION_TOKEN_VARIABLE: extension_token} if extension_token else None,
-            args=["-y", PLAYWRIGHT_MCP, *(["--extension"] if extension_token else own_window),
+            command=command, cwd=str(upload_dir),
+            env={EXTENSION_TOKEN_VARIABLE: extension_token} if extension_token else None,
+            args=[*server, *(["--extension"] if extension_token else own_window),
                   "--output-dir", str(profile_dir.parent / "playwright-output"), "--snapshot-mode", "none", "--codegen", "none",
                   "--timeout-navigation", NAVIGATION_TIMEOUT_MILLISECONDS, "--timeout-settle", SETTLE_MILLISECONDS])
         self._anthropic = claude(timeout=Timeout(REQUEST_TIMEOUT_SECONDS, connect=DEFAULT_TIMEOUT.connect))

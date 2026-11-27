@@ -4,6 +4,9 @@ import asyncio
 import base64
 import copy
 import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -11,6 +14,7 @@ import httpx2
 import pytest
 from anthropic.types import Message
 
+import apps
 import credit
 import mac
 import main
@@ -450,3 +454,14 @@ def test_captures_fit_inside_the_screen_size_so_the_api_accepts_them(region):
     assert width <= screen._width and height <= screen._height + 1
     left, top, right, bottom = region or (0, 0, screen._width, screen._height)
     assert abs(width / height - (right - left) / (bottom - top)) < 0.05, "the aspect ratio changed"
+
+
+def test_in_the_app_only_status_lines_reach_the_app_and_stray_prints_go_to_the_log() -> None:
+    """Beacon.app reads Python's stdout as JSON status lines; a library printing there would corrupt them."""
+    script = ("import menubar; helper = menubar.connect_helper(); print('stray'); "
+              "helper.stdin.write('{\"state\": \"ready\"}\\n'); helper.stdin.flush(); print(helper.stdout.readline().strip())")
+    ran = subprocess.run([sys.executable, "-c", script], input='{"action": "wake"}\n', capture_output=True, text=True,
+                         env={**os.environ, apps.IN_APP: "1"}, timeout=60)
+    print(ran)
+    assert ran.stdout == '{"state": "ready"}\n', ran.stdout
+    assert ran.stderr.split() == ["stray", '{"action":', '"wake"}'], ran.stderr

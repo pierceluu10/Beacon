@@ -144,7 +144,7 @@ trusting the model:
 | `inspect.js` | Runs in the page to describe the element a click or key press would hit, so the gate judges the real DOM, not the model's description. |
 | `everyday.py` | Reads the address and title of the front tab of your everyday Chrome when that Chrome is the app in front. |
 | `front_tab.js` | The macOS script `everyday.py` runs. It addresses the Chrome in front by process id, because every Chrome answers to the same name. |
-| `menubar.py`, `menubar.swift`, `mark.png` | The menu bar item, its menu, the key recorder and the Memory window: a small native helper, compiled on first run (needs `xcode-select --install`). |
+| `menubar.py`, `app/`, `mark.png` | The menu bar item, onboarding, Settings, the key recorder and the Memory window: native Swift, compiled on first run from a clone (needs `xcode-select --install`), or Beacon.app's own executable. |
 | `mac.py` | The whole-Mac mode: screenshots, mouse and keyboard through Anthropic's computer toolset. |
 | `prompt.txt`, `mac_prompt.txt` | Short public prompts, for local testing with your own `ANTHROPIC_API_KEY`. On Beacon's free credit the server uses Beacon's own prompts instead. |
 
