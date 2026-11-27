@@ -9,14 +9,15 @@ import Quartz
 from anthropic import DEFAULT_TIMEOUT, Timeout
 from ApplicationServices import AXIsProcessTrustedWithOptions, kAXTrustedCheckOptionPrompt
 
+import apps
 from agent import (ASK_TOOL, CACHED, OUTPUT, INTERRUPTED, KEPT_BLOCK_TYPES, MAX_TOKENS, NO_ANSWER, NOW, OUT_OF_STEPS,
-                   REQUEST_TIMEOUT_SECONDS, WARMUP, Ask, Conversation, Narrate)
+                   REQUEST_TIMEOUT_SECONDS, WARMUP, Ask, Confirm, Conversation, Narrate)
 from credit import claude
 from memory import Memory
 from timing import span
 
 TOOLSET = "computer"
-TOOLS = [{"type": "computer_toolset_20260801"}, ASK_TOOL]
+TOOLS = [{"type": "computer_toolset_20260801"}, ASK_TOOL, *apps.APP_TOOLS]
 MAX_STEPS = 60
 KEPT_SCREENS = 10  # older ones turn stale, keeping a prompt under Haiku's 100K-token line
 STALE_SCREEN = "(older screenshot removed)"
@@ -198,9 +199,10 @@ def check_permissions() -> None:
 class MacAgent(Conversation):
     """One conversation that operates the whole Mac. Same surface as agent.Agent, so the voice loop does not care which."""
 
-    def __init__(self, model: str, memory: Memory, system: list[dict], ask: Ask, narrate: Narrate) -> None:
+    def __init__(self, model: str, memory: Memory, system: list[dict], confirm: Confirm, ask: Ask,
+                 narrate: Narrate) -> None:
         super().__init__(memory, narrate)
-        self._model, self._ask = model, ask
+        self._model, self._confirm, self._ask = model, confirm, ask
         self._system = system
         self._anthropic = claude(timeout=Timeout(REQUEST_TIMEOUT_SECONDS, connect=DEFAULT_TIMEOUT.connect))
         self._screens: list[dict] = []
@@ -271,6 +273,9 @@ class MacAgent(Conversation):
             if call.name == ASK_TOOL["name"]:
                 answer = await self._ask(str(call.input.get("question", "")))
                 result["content"] = f"The user said: {answer}" if answer else NO_ANSWER
+            elif call.name in apps.APPS:
+                with span("app", tool=call.name):
+                    result["content"] = await apps.use(call.name, call.input, self._confirm)
             else:
                 result["toolset_name"] = TOOLSET
                 try:

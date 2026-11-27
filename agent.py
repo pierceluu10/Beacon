@@ -13,6 +13,7 @@ from mcp import ClientSession, MCPError, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from mcp.types import CONNECTION_CLOSED, REQUEST_TIMEOUT
 
+import apps
 import everyday
 from credit import claude
 from gate import ALLOW, UNREADABLE, Verdict, blocked, judge, judge_dialog, to_inspect, url_refusal
@@ -209,7 +210,7 @@ class Agent(Conversation):
         await self._browser.initialize()
         listed = await self._browser.list_tools()
         self._tools = [{"name": tool.name, "description": tool.description, "input_schema": tool.input_schema}
-                       for tool in listed.tools if tool.name in BROWSER_TOOLS] + [ASK_TOOL]
+                       for tool in listed.tools if tool.name in BROWSER_TOOLS] + [ASK_TOOL, *apps.APP_TOOLS]
         # The window opens now, not on the first command.
         opened = await self._browser.call_tool("browser_tabs", {"action": "list"})
         if opened.is_error:
@@ -326,6 +327,9 @@ class Agent(Conversation):
         if tool == ASK_TOOL["name"]:
             answer = await self._ask(str(arguments.get("question", "")))
             return f"The user said: {answer}" if answer else NO_ANSWER
+        if tool in apps.APPS:
+            with span("app", tool=tool):
+                return await apps.use(tool, arguments, self._confirm)
         if tool not in BROWSER_TOOLS:
             return f"Unknown tool {tool}."
         try:
