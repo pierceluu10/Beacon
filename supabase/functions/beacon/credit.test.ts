@@ -1,7 +1,7 @@
 // Run with: node --test supabase/functions/beacon/credit.test.ts
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { callerId, cost, CREDIT_USD, DAILY_CEILING_USD, isDevice, refusal } from "./credit.ts";
+import { callerId, cost, streamedUsage, CREDIT_USD, DAILY_CEILING_USD, isDevice, refusal } from "./credit.ts";
 
 test("a typical Opus step with a cached prompt and a screenshot costs a few cents", () => {
   const usage = { input_tokens: 1800, cache_read_input_tokens: 9000, cache_creation_input_tokens: 0, output_tokens: 150 };
@@ -42,4 +42,17 @@ test("the device id is read from x-api-key or, as the Anthropic SDK sends it, a 
   assert.equal(callerId(new Headers({ authorization: `Bearer ${id}` })), id);
   assert.equal(callerId(new Headers({ authorization: `Basic ${id}` })), null);
   assert.equal(callerId(new Headers()), null);
+});
+
+test("a streamed reply's usage is read from its events, even when an event is split across chunks", async () => {
+  const events = [
+    'event: message_start\ndata: {"type":"message_start","message":{"usage":{"input_tokens":4,"cache_read_input_tokens":5000,',
+    '"output_tokens":1}}}\n\nevent: content_block_delta\ndata: {"type":"content_block_delta","delta":{"text":"Hi"}}\n\n',
+    'event: message_delta\ndata: {"type":"message_delta","usage":{"output_tokens":42}}\n\n',
+  ];
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream({ start(controller) { events.forEach((part) => controller.enqueue(encoder.encode(part))); controller.close(); } });
+  const usage = await streamedUsage(stream);
+  console.log(usage);
+  assert.deepEqual(usage, { input_tokens: 4, cache_read_input_tokens: 5000, output_tokens: 42 });
 });

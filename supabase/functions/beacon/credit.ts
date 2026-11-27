@@ -31,6 +31,23 @@ export function cost(model: string, usage: Usage): number {
   return factor * (input * price.input + read * price.cacheRead + written * price.cacheWrite + output * price.output) / MILLION;
 }
 
+// The usage of a streamed reply, read from its server-sent events as they pass through.
+export async function streamedUsage(events: ReadableStream<Uint8Array>): Promise<Usage> {
+  const usage: Usage = {};
+  let pending = "";
+  for await (const chunk of events.pipeThrough(new TextDecoderStream())) {
+    const lines = (pending + chunk).split("\n");
+    pending = lines.pop()!;
+    for (const line of lines) {
+      if (!line.startsWith("data: ")) continue;
+      const event = JSON.parse(line.slice("data: ".length));
+      if (event.type === "message_start") Object.assign(usage, event.message.usage);
+      if (event.type === "message_delta") Object.assign(usage, event.usage);
+    }
+  }
+  return usage;
+}
+
 const DEVICE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 export function isDevice(id: string | null): id is string {

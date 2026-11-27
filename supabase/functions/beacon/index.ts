@@ -13,6 +13,7 @@ import {
   NEW_DEVICES_PER_IP_PER_DAY,
   PRICES,
   refusal,
+  streamedUsage,
 } from "./credit.ts";
 import { UnknownPromptError, withPrompts } from "./prompt.ts";
 
@@ -70,15 +71,20 @@ async function spentToday(): Promise<number> {
   return Number(data?.usd ?? 0);
 }
 
-async function refused(caller: Device): Promise<Response | null> {
-  const reason = refusal(Number(caller.spent_usd), await spentToday());
+function refused(caller: Device, today: number): Response | null {
+  const reason = refusal(Number(caller.spent_usd), today);
   return reason && failure(reason.status, reason.type, reason.message);
+}
+
+// Counting runs after the response is on its way (EdgeRuntime.waitUntil), so the user never waits on the database.
+async function count(rpc: string, args: Record<string, unknown>): Promise<void> {
+  const { error } = await db.rpc(rpc, args);
+  if (error) console.error(`${rpc} failed`, error);
 }
 
 async function messages(request: Request, caller: Device): Promise<Response> {
   const body = await request.json();
   if (!(body.model in PRICES)) return failure(400, "invalid_request_error", `Model ${body.model} is not offered.`);
-  if (body.stream) return failure(400, "invalid_request_error", "Streaming is not offered.");
   body.max_tokens = Math.min(body.max_tokens ?? MAX_OUTPUT_TOKENS, MAX_OUTPUT_TOKENS);
   try {
     body.system = await withPrompts(body.system, storedPrompt);
@@ -92,11 +98,15 @@ async function messages(request: Request, caller: Device): Promise<Response> {
     if (value) headers.set(name, value);
   }
   const answer = await fetch(ANTHROPIC_MESSAGES, { method: "POST", headers, body: JSON.stringify(body) });
-  const text = await answer.text();
-  if (answer.ok) {
-    const { error } = await db.rpc("add_spend", { device: caller.id, usd: cost(body.model, JSON.parse(text).usage) });
-    if (error) throw error;
+  if (body.stream && answer.ok) {
+    const [toMac, toMeter] = answer.body!.tee(); // the meter reads to the end even if the Mac hangs up
+    const spent = async () => count("add_spend", { device: caller.id, usd: cost(body.model, await streamedUsage(toMeter)) });
+    EdgeRuntime.waitUntil(spent());
+    return new Response(toMac, { status: answer.status, headers: { "content-type": "text/event-stream" } });
   }
+  const text = await answer.text();
+  const usage = answer.ok ? JSON.parse(text).usage : null;
+  if (usage) EdgeRuntime.waitUntil(count("add_spend", { device: caller.id, usd: cost(body.model, usage) }));
   return new Response(text, { status: answer.status, headers: { "content-type": "application/json" } });
 }
 
@@ -111,10 +121,7 @@ async function speech(request: Request, caller: Device, voice: string): Promise<
     headers: { "content-type": "application/json", "xi-api-key": Deno.env.get("ELEVENLABS_API_KEY")! },
     body: JSON.stringify(body),
   });
-  if (answer.ok) {
-    const { error } = await db.rpc("add_speech", { device: caller.id, characters: body.text.length });
-    if (error) throw error;
-  }
+  if (answer.ok) EdgeRuntime.waitUntil(count("add_speech", { device: caller.id, characters: body.text.length }));
   return new Response(answer.body, { status: answer.status, headers: { "content-type": "application/octet-stream" } });
 }
 
@@ -131,10 +138,10 @@ async function creditRequest(caller: Device): Promise<Response> {
 Deno.serve(async (request) => {
   if (request.method !== "POST") return failure(405, "invalid_request_error", "Only POST is offered.");
   const path = new URL(request.url).pathname;
-  const caller = await device(request);
+  const [caller, today] = await Promise.all([device(request), spentToday()]);
   if (caller instanceof Response) return caller;
   if (path.endsWith("/credit-request")) return creditRequest(caller);
-  const blocked = await refused(caller);
+  const blocked = refused(caller, today);
   if (blocked) return blocked;
   if (path.endsWith("/v1/messages")) return messages(request, caller);
   const voice = path.match(SPEECH_PATH)?.[1];
