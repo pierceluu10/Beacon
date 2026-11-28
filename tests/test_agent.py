@@ -958,13 +958,6 @@ def carry_out_while(heard: list[str], reply: side.Reply | None = None, interrupt
     return asyncio.run(scenario())
 
 
-def without_acknowledgement(spoken: list[str]) -> list[str]:
-    """What was spoken besides the one acknowledgement every task outlasting it gets ("wait" is not a question)."""
-    rest = [line for line in spoken if line not in main.ACKNOWLEDGEMENTS[False]]
-    assert len(spoken) - len(rest) == 1, f"expected one acknowledgement in {spoken}"
-    return rest
-
-
 @pytest.mark.parametrize(("heard", "interrupted", "outcome"), [(["Stop."], False, main.STOPPED), ([], True, None)],
                          ids=["a spoken stop", "Ctrl-C"])
 def test_only_a_spoken_stop_ends_a_task_with_stopped(heard: list[str], interrupted: bool, outcome: str | None) -> None:
@@ -980,14 +973,14 @@ def test_only_a_spoken_stop_ends_a_task_with_stopped(heard: list[str], interrupt
 def test_words_said_to_beacon_mid_task_get_a_quick_reply_and_the_task_goes_on(said: str, replied: list[str]) -> None:
     ended = carry_out_while([said], side.Reply("I can see your inbox.", side.CONTINUE))
     assert [line.rstrip("?.") for line in ended.side.replied] == [line.rstrip("?.") for line in replied], ended.side.replied
-    assert without_acknowledgement(ended.spoken) == ["I can see your inbox."] * len(replied), ended.spoken
+    assert ended.spoken == ["I can see your inbox."] * len(replied), ended.spoken
     assert ended.line is None and ended.agent.told == [], f"the task ended with {ended.line!r} or was told {ended.agent.told}"
 
 
 def test_a_change_of_plan_mid_task_is_handed_to_the_task() -> None:
     ended = carry_out_while(["Hey Beacon, use the other account instead."], side.Reply("Okay, switching.", side.CHANGE))
     assert ended.agent.told == ["use the other account instead"], f"the task was told {ended.agent.told}"
-    assert without_acknowledgement(ended.spoken) == ["Okay, switching."] and ended.line is None, (ended.spoken, ended.line)
+    assert ended.spoken == ["Okay, switching."] and ended.line is None, (ended.spoken, ended.line)
 
 
 def test_a_stop_in_other_words_ends_the_task_with_the_reply() -> None:

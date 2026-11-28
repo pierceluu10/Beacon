@@ -40,7 +40,7 @@ FORGET_AFTER_SECONDS = 600
 ALWAYS_BLOCKED_HOSTS = frozenset({"linkedin.com"})  # its terms forbid automating it; added to any blocked_hosts in the config
 ACKNOWLEDGE_AFTER_SECONDS = 0.4  # long enough to skip it when the work is already done, short enough to feel instant
 QUESTION_STARTS = ("what", "when", "where", "who", "which", "how", "why", "is ", "are ", "does ", "did ")
-ACKNOWLEDGEMENTS = {True: ("Let me check.", "Looking now.", "One sec."), False: ("On it.", "Sure.", "Got it.", "Okay.")}
+ACKNOWLEDGEMENTS = ("Let me check.", "Looking now.", "One sec.")  # questions only: "On it." before a command felt awkward
 STOPPED = "Stopped."
 CONFIRM_RETRY = "Sorry, yes or no?"
 CRASHED = "Something broke and I have to quit. The details are in the terminal."
@@ -103,13 +103,13 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
     return Config(**values)
 
 
-_acknowledgements = {question: itertools.cycle(lines) for question, lines in ACKNOWLEDGEMENTS.items()}
+_acknowledgements = itertools.cycle(ACKNOWLEDGEMENTS)
 
 
-def acknowledgement(command: str) -> str:
-    """A short line said at once, so the user knows they were heard: "Let me check." for a question, "On it." otherwise,
-    taking turns so it does not sound canned."""
-    return next(_acknowledgements[command.lower().startswith(QUESTION_STARTS)])
+def acknowledgement(command: str) -> str | None:
+    """A short line said at once when the user asks a question, so they know they were heard; taking turns so it does
+    not sound canned. A command gets none: its first spoken step says what Beacon is doing."""
+    return next(_acknowledgements) if command.lower().startswith(QUESTION_STARTS) else None
 
 
 def spoken_error(error: Exception) -> str:
@@ -211,8 +211,8 @@ async def carry_out(agent: Agent | MacAgent, ears: Ears, side: Side, command: st
 
     timing.command.set(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {command}")  # the tasks below inherit it
     work = asyncio.create_task(agent.run(command))
-    acknowledging = asyncio.get_running_loop().call_later(ACKNOWLEDGE_AFTER_SECONDS, ears.say_later,
-                                                          acknowledgement(command))
+    line = acknowledgement(command)
+    acknowledging = line and asyncio.get_running_loop().call_later(ACKNOWLEDGE_AFTER_SECONDS, ears.say_later, line)
     watcher = asyncio.create_task(listen_while_working(ears, agent, side, stop, names, in_hand))
     ears.working = True
     try:
@@ -232,7 +232,8 @@ async def carry_out(agent: Agent | MacAgent, ears: Ears, side: Side, command: st
             await agent.restart()  # here, in the conversation's task, which entered the agent
         return spoken_error(error), None
     finally:
-        acknowledging.cancel()
+        if acknowledging:
+            acknowledging.cancel()
         ears.working = False
         ears.hush()  # a line the task queued to speak is out of date once it ends
         watcher.cancel()
@@ -299,7 +300,7 @@ async def main(started: Callable[[Ears], None] = lambda ears: None, mode: str = 
     memory = Memory(MEMORY_NOTES.resolve(), MEMORY_FOLDER.resolve())
     request_permissions()  # every macOS prompt at once, on the first launch, rather than one per failure later
     async with Mouth() as mouth:
-        preparing = asyncio.create_task(mouth.prepare([*itertools.chain(*ACKNOWLEDGEMENTS.values()), STOPPED, CONFIRM_RETRY]))
+        preparing = asyncio.create_task(mouth.prepare([*ACKNOWLEDGEMENTS, STOPPED, CONFIRM_RETRY]))
         try:
             async with (Ears(STT_MODEL, list(config.names), mouth, wake) as ears,
                         build_agent(config, mode, ears, memory) as agent, Side(QUICK_MODEL, config.agent_name) as side):
