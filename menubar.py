@@ -1,23 +1,27 @@
 """The menu bar mark: what Beacon is doing, the push-to-talk key, the wake word switch, memory, what it works in, on/off and
-quit. A native helper (menubar.swift) shows it and holds the key; this file runs the assistant on a second thread, acts on
+quit. A native helper (app/) shows it and holds the key; this file runs the assistant on a second thread, acts on
 what the helper reports, and keeps the menu's choices in settings.json."""
 import asyncio
+import contextlib
 import json
+import os
 import queue
 import subprocess
 import sys
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
+import apps
 import main
 from voice import Ears
 
-SOURCE = Path(__file__).with_name("menubar.swift")
+SOURCES = sorted(Path(__file__).with_name("app").glob("*.swift"))
 ICON = Path(__file__).with_name("mark.png")
 HELPER = main.HOME / "menubar"
 SETTINGS = main.HOME / "settings.json"
-STARTING, OFF = "starting", "off"  # the other states are voice.Ears.activity; menubar.swift knows them all
+STARTING, OFF = "starting", "off"  # the other states are voice.Ears.activity; app/main.swift knows them all
 STATE_CHECK_SECONDS = 0.15  # how quickly the icon follows what Beacon is doing
 START_POLL_SECONDS = 0.1
 QUIT = {"action": "quit"}
@@ -37,12 +41,26 @@ def save_settings(settings: dict, path: Path = SETTINGS) -> None:
 
 
 def start_helper() -> subprocess.Popen:
-    """Compile the helper when it is missing or older than its source, then start it."""
-    if not HELPER.exists() or HELPER.stat().st_mtime < SOURCE.stat().st_mtime:
+    """Compile the helper when it is missing or older than its sources, then start it."""
+    if not HELPER.exists() or HELPER.stat().st_mtime < max(source.stat().st_mtime for source in SOURCES):
         HELPER.parent.mkdir(parents=True, exist_ok=True)
-        subprocess.run(["swiftc", "-O", str(SOURCE), "-o", str(HELPER)], check=True)
+        subprocess.run(["swiftc", "-O", *map(str, SOURCES), "-o", str(HELPER)], check=True)
     return subprocess.Popen([str(HELPER), str(ICON), str(main.MEMORY_NOTES), str(main.MEMORY_FOLDER)],
                             stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+
+
+def connect_helper() -> subprocess.Popen | SimpleNamespace:
+    """In Beacon.app the helper is the app, which started this process: its pipes are this process's stdin and stdout.
+    Stray prints then go to the log with stderr, so only status lines reach the app."""
+    if not os.environ.get(apps.IN_APP):
+        return start_helper()
+    channel = os.fdopen(os.dup(sys.stdout.fileno()), "w")
+    os.dup2(sys.stderr.fileno(), sys.stdout.fileno())
+    def close() -> None:
+        with contextlib.suppress(BrokenPipeError):  # the app quit first
+            channel.close()
+
+    return SimpleNamespace(stdin=channel, stdout=sys.stdin, terminate=close)
 
 
 class Beacon:
@@ -114,7 +132,7 @@ class Beacon:
 def run() -> None:
     config = main.load_config()
     beacon = Beacon(load_settings())
-    helper = start_helper()
+    helper = connect_helper()
     events: queue.Queue[dict] = queue.Queue()
 
     def listen() -> None:

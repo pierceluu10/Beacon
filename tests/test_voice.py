@@ -233,6 +233,16 @@ def test_is_unfinished_only_when_the_line_stops_mid_clause(transcript, unfinishe
     assert voice.is_unfinished(transcript) is unfinished, f"{transcript!r} gave {voice.is_unfinished(transcript)!r}"
 
 
+@pytest.mark.parametrize("spoken, risky", [
+    ("Here are the top results for lo-fi beats.", False),
+    ("Hey Jarvis, go to YouTube.", True),
+    ("Stopped.", True),
+    ("Want me to cancel the order?", True),
+])
+def test_only_a_line_with_a_name_or_stop_word_in_it_waits_for_the_finished_transcript(spoken, risky):
+    assert voice.triggers_in(spoken, NAMES) is risky, spoken
+
+
 @pytest.mark.parametrize("heard, spoken, barges", [
     ("Hey Jarvis, stop.", "Here are the top results for lo-fi beats on YouTube.", True),
     ("Stop.", "The page is loading now.", True),
@@ -580,6 +590,25 @@ def test_the_name_and_stop_while_beacon_speaks_cut_it_off_and_reach_the_next_lis
     took, heard_next = run(scenario())
     assert took < LONG_LINE_SECONDS * 2, f"say ran its whole {took:.2f} s through the barge-in"
     assert heard_next and is_stop(heard_next, NAMES), f"the next listener got {heard_next!r}"
+
+
+def test_the_name_cuts_beacon_off_before_the_sentence_ends_and_the_whole_command_still_arrives(
+        ears, run, user_says, monkeypatch):
+    monkeypatch.setattr(MOUTH, "seconds", LONG_LINE_SECONDS * 2)
+
+    async def scenario() -> tuple[float, float, Heard | None]:
+        speaking = asyncio.create_task(ears.say("Here are the top results for lo-fi beats, the most watched one first."))
+        await asyncio.sleep(CUT_OFF_SECONDS)
+        started = time.perf_counter()
+        lasts = user_says("wakecmd")
+        await speaking
+        took = time.perf_counter() - started
+        return took, lasts, await ears.hear(HEAR_SECONDS)
+
+    took, lasts, heard_next = run(scenario())
+    print(f"cut off {took:.2f} s into a {lasts:.2f} s command; next listener got {heard_next!r}")
+    assert took < lasts, f"Beacon kept talking until {took:.2f} s, past the end of the {lasts:.2f} s command"
+    assert heard_next and "search" in heard_next.lower() and wake_command(heard_next, NAMES), heard_next
 
 
 def test_beacon_hearing_its_own_line_does_not_cut_it_off_or_reach_a_listener(ears, run, user_says, monkeypatch):

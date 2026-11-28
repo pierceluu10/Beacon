@@ -1,0 +1,17 @@
+# On a version tag, builds Beacon.dmg and attaches it to the GitHub release.
+name: Release
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: write
+jobs:
+  dmg:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: scripts/build-app.sh
+      - run: gh release create "$GITHUB_REF_NAME" dist/Beacon.dmg --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}

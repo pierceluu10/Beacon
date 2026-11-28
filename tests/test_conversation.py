@@ -4,6 +4,10 @@ import asyncio
 import base64
 import copy
 import json
+import os
+import subprocess
+import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -11,6 +15,7 @@ import httpx2
 import pytest
 from anthropic.types import Message
 
+import apps
 import credit
 import mac
 import main
@@ -23,6 +28,10 @@ from gate import url_refusal
 from memory import Memory
 
 NEVER_SENT = "never sent: these tests make no API request"
+
+
+async def NO_CONFIRM(question: str) -> bool:
+    raise AssertionError(f"asked {question!r}, but nothing here needs a yes")
 NOTES = "My name is Sam. Keep replies short."
 PNG = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")
 PDF = b"%PDF-1.4\n%%EOF\n"
@@ -166,12 +175,15 @@ def test_the_greeting_is_written_from_the_notes() -> None:
 class ScriptedMac:
     """Records actions; on the first one, the user speaks to the running task."""
 
-    def __init__(self, driver: mac.MacAgent, words: str) -> None:
+    def __init__(self, driver: mac.MacAgent, words: str = "") -> None:
         self.actions: list[str] = []
         self._driver, self._words = driver, words
 
+    async def capture(self, region: tuple | None = None, name: str = "screen.png") -> dict:
+        return {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "c2NyZWVu"}}
+
     async def act(self, name: str, arguments: dict) -> list[dict]:
-        if not self.actions:
+        if not self.actions and self._words:
             self._driver.tell(self._words)
         self.actions.append(name)
         return [{"type": "text", "text": mac.OK}]
@@ -180,7 +192,7 @@ class ScriptedMac:
 def test_a_running_task_speaks_its_first_line_reads_memory_once_and_takes_words_said_mid_task(remembered: Memory) -> None:
     remembered.notes_path.write_text(NOTES)
     narrated: list[str] = []
-    driver = mac.MacAgent(NEVER_SENT, remembered, "prompt", lambda question: None, narrated.append)
+    driver = mac.MacAgent(NEVER_SENT, remembered, "prompt", NO_CONFIRM, lambda question: None, narrated.append)
     driver._mac = ScriptedMac(driver, "use Gmail, not Outlook")
     driver._anthropic = ScriptedAnthropic(
         reply("tool_use", text("Opening your mail."), tool_use("left_click", {"coordinate": [1, 2]}, 1)),
@@ -200,8 +212,25 @@ def test_a_running_task_speaks_its_first_line_reads_memory_once_and_takes_words_
     assert len(openings) == 1, "the memory was sent again in the same conversation"
 
 
+def test_each_command_starts_from_a_fresh_screenshot_and_older_ones_say_they_still_stand(remembered: Memory) -> None:
+    """A follow-up whose screenshots were all removed read its own earlier answer as made up and went to look again."""
+    driver = mac.MacAgent(NEVER_SENT, remembered, "prompt", NO_CONFIRM, lambda question: None, lambda line: None)
+    driver._mac = ScriptedMac(driver)
+    driver._anthropic = ScriptedAnthropic(reply("end_turn", text("Your last message is from Sam.")),
+                                          reply("end_turn", text("Sam said hi.")))
+    asyncio.run(driver.run("read my messages"))
+    asyncio.run(driver.run("what did it say"))
+    sent = driver._anthropic.requests[1]["messages"]
+    openings = [message["content"] for message in sent if message["role"] == "user" and isinstance(message["content"], list)
+                and any(block.get("text", "").endswith(mac.SCREEN_NOW) for block in message["content"])]
+    print(openings)
+    assert len(openings) == 2 and openings[-1][-1]["type"] == "image", "the follow-up came without the screen"
+    assert openings[0][-1] == {"type": "text", "text": mac.STALE_SCREEN}, openings[0][-1]
+
+
 def test_words_that_arrive_as_the_task_finishes_carry_it_on(remembered: Memory) -> None:
-    driver = mac.MacAgent(NEVER_SENT, remembered, "prompt", lambda question: None, lambda line: None)
+    driver = mac.MacAgent(NEVER_SENT, remembered, "prompt", NO_CONFIRM, lambda question: None, lambda line: None)
+    driver._mac = ScriptedMac(driver)
     driver._anthropic = ScriptedAnthropic(reply("end_turn", text("Opened Notes.")), reply("end_turn", text("Added it.")))
     original = driver._anthropic.messages.create
 
@@ -233,7 +262,8 @@ def writing_forever(driver: mac.MacAgent) -> asyncio.Event:
 
 
 def test_words_said_while_the_model_writes_a_step_drop_that_step_and_reach_the_model_at_once(remembered: Memory) -> None:
-    driver = mac.MacAgent(NEVER_SENT, remembered, "prompt", lambda question: None, lambda line: None)
+    driver = mac.MacAgent(NEVER_SENT, remembered, "prompt", NO_CONFIRM, lambda question: None, lambda line: None)
+    driver._mac = ScriptedMac(driver)
     driver._anthropic = ScriptedAnthropic(reply("end_turn", text("Opened Gmail.")))
     writing = writing_forever(driver)
 
@@ -250,7 +280,8 @@ def test_words_said_while_the_model_writes_a_step_drop_that_step_and_reach_the_m
 
 
 def test_a_stop_while_the_model_writes_a_step_ends_the_task(remembered: Memory) -> None:
-    driver = mac.MacAgent(NEVER_SENT, remembered, "prompt", lambda question: None, lambda line: None)
+    driver = mac.MacAgent(NEVER_SENT, remembered, "prompt", NO_CONFIRM, lambda question: None, lambda line: None)
+    driver._mac = ScriptedMac(driver)
     driver._anthropic = ScriptedAnthropic()
     writing = writing_forever(driver)
 
@@ -363,6 +394,50 @@ def test_without_a_key_the_voice_goes_through_beacons_server_as_this_mac(monkeyp
     assert request.headers["x-api-key"] == credit.device_id() and "xi-api-key" not in request.headers
 
 
+def test_a_short_line_plays_from_the_cache_the_second_time_and_a_long_one_is_never_kept(
+        monkeypatch: pytest.MonkeyPatch, voice_cache: Path) -> None:
+    sent, played = [], []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        sent.append(json.loads(request.content)["text"])
+        return httpx2.Response(200, content=b"\x01\x02\x03\x04")
+
+    monkeypatch.setattr(mouth.sounddevice, "RawOutputStream", fake_speakers(played))
+    long_line = "x" * (mouth.CACHED_CHARACTERS + 1)
+    voice = stream(handler)
+    for line in ("On it.", "On it.", long_line, long_line):
+        asyncio.run(voice.speak(line))
+    print(sent, list(voice_cache.iterdir()))
+    assert sent == ["On it.", long_line, long_line], sent
+    assert [clip.name for clip in voice_cache.iterdir()] == [mouth.clip_path("On it.").name]
+    assert played.count(b"\x01\x02\x03\x04") == 4, played  # the cached line sounds the same as the streamed one
+
+
+def test_a_refused_line_is_not_cached(monkeypatch: pytest.MonkeyPatch, voice_cache: Path) -> None:
+    monkeypatch.setattr(mouth, "say", lambda text, voice: asyncio.sleep(0))
+    asyncio.run(stream(lambda request: httpx2.Response(500)).speak("On it."))
+    assert not voice_cache.exists() or not any(voice_cache.iterdir())
+
+
+def test_prepare_fetches_lines_without_playing_them_and_the_cache_keeps_the_most_recent(
+        monkeypatch: pytest.MonkeyPatch, voice_cache: Path) -> None:
+    monkeypatch.setattr(mouth, "CACHED_CLIPS", 2)
+    monkeypatch.setattr(mouth.sounddevice, "RawOutputStream", lambda **settings: pytest.fail("prepare played audio"))
+    voice = stream(lambda request: httpx2.Response(200, content=b"\x01\x02"))
+    asyncio.run(voice.prepare(["One.", "Two.", "Three."]))
+    kept = sorted(clip.name for clip in voice_cache.glob("*.pcm"))
+    print(kept)
+    assert kept == sorted(mouth.clip_path(line).name for line in ("Two.", "Three.")), kept
+    assert not list(voice_cache.glob("*.part"))
+
+
+def test_only_a_question_gets_an_acknowledgement_and_they_take_turns() -> None:
+    questions = [main.acknowledgement("What's the weather") for _ in range(3)]
+    print(questions)
+    assert sorted(questions) == sorted(main.ACKNOWLEDGEMENTS), questions
+    assert main.acknowledgement("open YouTube") is None
+
+
 @pytest.mark.parametrize("mode", [main.WINDOW, main.MAC])
 def test_every_prompt_that_writes_spoken_words_carries_the_speaking_style(tmp_path: Path, mode: str) -> None:
     """The task prompts, the greeting and the mid-task replies all write words that are spoken: they must sound the same."""
@@ -382,7 +457,7 @@ def test_on_beacons_server_the_prompt_never_reaches_this_mac(monkeypatch: pytest
 
 
 def test_a_task_keeps_only_its_latest_screenshots(remembered: Memory) -> None:
-    driver = mac.MacAgent(NEVER_SENT, remembered, [], lambda question: None, lambda line: None)
+    driver = mac.MacAgent(NEVER_SENT, remembered, [], NO_CONFIRM, lambda question: None, lambda line: None)
     screens = [{"type": "image", "source": number} for number in range(3)]
     driver._screens = list(screens)
     driver._keep_screens(2)
@@ -401,3 +476,49 @@ def test_captures_fit_inside_the_screen_size_so_the_api_accepts_them(region):
     assert width <= screen._width and height <= screen._height + 1
     left, top, right, bottom = region or (0, 0, screen._width, screen._height)
     assert abs(width / height - (right - left) / (bottom - top)) < 0.05, "the aspect ratio changed"
+
+
+def test_in_the_app_only_status_lines_reach_the_app_and_stray_prints_go_to_the_log() -> None:
+    """Beacon.app reads Python's stdout as JSON status lines; a library printing there would corrupt them."""
+    script = ("import menubar; helper = menubar.connect_helper(); print('stray'); "
+              "helper.stdin.write('{\"state\": \"ready\"}\\n'); helper.stdin.flush(); print(helper.stdout.readline().strip())")
+    ran = subprocess.run([sys.executable, "-c", script], input='{"action": "wake"}\n', capture_output=True, text=True,
+                         env={**os.environ, apps.IN_APP: "1"}, timeout=60)
+    print(ran)
+    assert ran.stdout == '{"state": "ready"}\n', ran.stdout
+    assert ran.stderr.split() == ["stray", '{"action":', '"wake"}'], ran.stderr
+
+
+def test_cutting_a_line_off_never_closes_the_speakers_while_a_write_is_under_way(
+        monkeypatch: pytest.MonkeyPatch, voice_cache: Path) -> None:
+    """Closing a CoreAudio stream mid-write segfaulted Beacon right after "On it."."""
+    events = []
+
+    class SlowSpeakers:
+        def __init__(self, **settings: object) -> None: pass
+        def start(self) -> None: pass
+
+        def write(self, audio: bytes) -> None:
+            events.append("write")
+            time.sleep(len(audio) / (mouth.OUTPUT_RATE * mouth.SAMPLE_BYTES))  # a real write lasts as long as its audio
+            events.append("written")
+
+        def stop(self) -> None: pass
+        def abort(self) -> None: events.append("abort")
+        def close(self) -> None: events.append("close")
+
+    monkeypatch.setattr(mouth.sounddevice, "RawOutputStream", SlowSpeakers)
+    mouth.keep_clip(mouth.clip_path("On it."), bytes(mouth.WRITE_BYTES * 20))  # a second of audio, played from the cache
+
+    async def scenario() -> float:
+        speaking = asyncio.create_task(stream(lambda request: httpx2.Response(500)).speak("On it."))
+        await asyncio.sleep(0.05)
+        started = time.perf_counter()
+        speaking.cancel()
+        await asyncio.wait({speaking})
+        return time.perf_counter() - started
+
+    took = asyncio.run(scenario())
+    print(events, took)
+    assert events[-3:] == ["written", "abort", "close"] and events.count("write") == events.count("written"), events
+    assert took < 0.1, f"the cut-off took {took:.2f} s"

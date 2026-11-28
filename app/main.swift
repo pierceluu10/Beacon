@@ -1,9 +1,11 @@
 // The menu bar mark. macOS 26 does not show a menu bar item that Python creates, so this helper shows it, owns the
-// push-to-talk key, the key recorder and the Memory window, and passes what happens on to Beacon as JSON lines.
-// Arguments: the mark icon, the memory notes file, the memory folder.
-// stdin, one line per change: {"state", "mode", "token", "wake", "hotkey": {"code", "modifiers", "label"}, "name"}.
-// stdout, one line per event: {"action": "push", "down": Bool} | {"action": "hotkey", "hotkey": {...}} |
-// {"action": "wake" | "power" | "mac" | "chrome" | "window" | "quit"}. It quits when stdin closes.
+// push-to-talk key, onboarding, Settings, the key recorder and the Memory window, and passes what happens on to Beacon
+// as JSON lines. Run from a terminal, Python starts it with the arguments: the mark icon, the memory notes file, the
+// memory folder; its stdin and stdout are the pipes. As Beacon.app's executable it starts Python itself, after
+// onboarding, and talks over that process's pipes instead.
+// Status in, one line per change: {"state", "mode", "token", "wake", "hotkey": {"code", "modifiers", "label"}, "name"}.
+// Events out, one line each: {"action": "push", "down": Bool} | {"action": "hotkey", "hotkey": {...}} |
+// {"action": "wake" | "power" | "mac" | "chrome" | "window" | "quit"}. It quits when Beacon's side closes.
 import AppKit
 import Carbon.HIToolbox
 
@@ -42,10 +44,14 @@ let keyNames: [UInt16: String] = [
 let functionKeys: Set<UInt16> = [122, 120, 99, 118, 96, 97, 98, 100, 101, 109, 103, 111, 105, 107, 113, 106, 64, 79, 80, 90]
 let escapeKey: UInt16 = 53
 
+let bundled = Bundle.main.bundleIdentifier != nil
+var beacon = FileHandle.standardOutput  // where events go: Python's stdin
+var started = false  // inside the app, Python runs only after onboarding
+var quitting = false  // a quit Beacon chose; any other, like System Settings' Quit & Reopen, opens it again
+
 func send(_ message: [String: Any]) {
     let data = try! JSONSerialization.data(withJSONObject: message)
-    print(String(decoding: data, as: UTF8.self))
-    fflush(stdout)
+    beacon.write(data + Data("\n".utf8))
 }
 
 /// The mark, with a small glyph beside it for what Beacon is doing: a microphone while it listens to you, dots while it
@@ -78,13 +84,10 @@ func modifierLabel(_ modifiers: UInt32) -> String {
 final class Menu: NSObject {
     let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     let mark: NSImage?
+    lazy var stateItem = NSMenuItem(title: stateNames["starting"]!, action: nil, keyEquivalent: "")
     lazy var wake = entry("", "wake")
-    lazy var hotkeyItem = NSMenuItem(title: "Push-to-Talk Key…", action: #selector(recordHotkey), keyEquivalent: "")
-    lazy var memoryItem = NSMenuItem(title: "Memory…", action: #selector(openMemory), keyEquivalent: "")
+    lazy var settingsItem = NSMenuItem(title: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
     lazy var power = entry("Turn Off", "power")
-    lazy var wholeMac = entry("My whole Mac", "mac")
-    lazy var myChrome = entry("My Chrome", "chrome")
-    lazy var ownWindow = entry("Separate Chrome window", "window")
     let memory: MemoryWindow
     var recorder: KeyRecorder?
     var status: Status?
@@ -99,13 +102,12 @@ final class Menu: NSObject {
         item.button?.image = indicator(mark: mark, state: "starting", faded: false)
         let menu = NSMenu()
         menu.autoenablesItems = false
-        for target in [hotkeyItem, memoryItem] { target.target = self }
-        let works = NSMenuItem(title: "Works in", action: nil, keyEquivalent: "")
-        works.submenu = NSMenu()
-        works.submenu?.autoenablesItems = false
-        [wholeMac, myChrome, ownWindow].forEach { works.submenu?.addItem($0) }
-        [wake, hotkeyItem, memoryItem, works, .separator(), power, entry("Quit Beacon", "quit")]
+        stateItem.isEnabled = false
+        settingsItem.target = self
+        [stateItem, .separator(), wake, settingsItem, .separator(), power, entry("Quit Beacon", "quit")]
             .forEach { menu.addItem($0) }
+        settingsModel.recordHotkey = { [weak self] in self?.recordHotkey() }
+        settingsModel.openMemory = { [weak self] in self?.openMemory() }
         item.menu = menu
         Timer.scheduledTimer(withTimeInterval: pulseSeconds, repeats: true) { [weak self] _ in self?.pulse() }
     }
@@ -118,7 +120,12 @@ final class Menu: NSObject {
     }
 
     @objc func clicked(_ sender: NSMenuItem) {
-        send(["action": sender.representedObject as! String])
+        let action = sender.representedObject as! String
+        if action == "quit" && bundled && !started {  // nobody to tell yet: quit straight away
+            quitting = true
+            return NSApp.terminate(nil)
+        }
+        send(["action": action])
     }
 
     /// The state to show: the key being held shows the microphone at once, before Beacon reports it.
@@ -133,13 +140,9 @@ final class Menu: NSObject {
         let wakePhrase = "“Hey \(status.name)”"
         wake.title = "Listen for \(wakePhrase)"
         wake.state = status.wake ? .on : .off
-        hotkeyItem.title = "Push-to-Talk Key: \(status.hotkey.label)…"
+        stateItem.title = stateNames[status.state] ?? status.state
         power.title = status.state == "off" ? "Turn On" : "Turn Off"
-        for choice in [wholeMac, myChrome, ownWindow] {
-            choice.state = choice.representedObject as? String == status.mode ? .on : .off
-        }
-        myChrome.isEnabled = status.token
-        myChrome.title = status.token ? "My Chrome" : "My Chrome (set extension_token first)"
+        settingsModel.status = status
         if recorder == nil { register(status.hotkey) }
         draw()
     }
@@ -186,12 +189,16 @@ final class Menu: NSObject {
                 self.status?.hotkey = chosen
             }
             self.register(self.status?.hotkey)
-            if let status = self.status { self.hotkeyItem.title = "Push-to-Talk Key: \(status.hotkey.label)…" }
+            settingsModel.status = self.status
         }
     }
 
     @objc func openMemory() {
         memory.show()
+    }
+
+    @objc func openSettings() {
+        showSettings(bundled: bundled)
     }
 }
 
@@ -441,9 +448,13 @@ func editMenu() -> NSMenu {
 let application = NSApplication.shared
 application.setActivationPolicy(.accessory)
 application.mainMenu = editMenu()
+let home = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".beacon")
 let arguments = CommandLine.arguments
-let menu = Menu(icon: arguments[1], memory: MemoryWindow(notesFile: URL(fileURLWithPath: arguments[2]),
-                                                          folder: URL(fileURLWithPath: arguments[3], isDirectory: true)))
+let iconPath = bundled ? Bundle.main.path(forResource: "mark", ofType: "png") ?? "" : arguments[1]
+let notesFile = bundled ? home.appendingPathComponent("memory.md") : URL(fileURLWithPath: arguments[2])
+let memoryFolder = bundled ? home.appendingPathComponent("memory", isDirectory: true)
+    : URL(fileURLWithPath: arguments[3], isDirectory: true)
+let menu = Menu(icon: iconPath, memory: MemoryWindow(notesFile: notesFile, folder: memoryFolder))
 var hotkeyEvents = [EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed)),
                     EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyReleased))]
 InstallEventHandler(GetApplicationEventTarget(), { _, event, _ in
@@ -452,16 +463,72 @@ InstallEventHandler(GetApplicationEventTarget(), { _, event, _ in
     return noErr
 }, hotkeyEvents.count, &hotkeyEvents, nil, nil)
 var pending = ""  // a line can arrive split across reads
-FileHandle.standardInput.readabilityHandler = { input in
-    let data = input.availableData
-    if data.isEmpty { exit(0) }  // Beacon is gone
-    pending += String(decoding: data, as: UTF8.self)
-    while let end = pending.firstIndex(of: "\n") {
-        let line = String(pending[..<end])
-        pending = String(pending[pending.index(after: end)...])
-        if let status = try? JSONDecoder().decode(Status.self, from: Data(line.utf8)) {
-            DispatchQueue.main.async { menu.show(status) }
+
+func listen(to statuses: FileHandle) {
+    statuses.readabilityHandler = { input in
+        let data = input.availableData
+        if data.isEmpty { exit(0) }  // Beacon is gone
+        pending += String(decoding: data, as: UTF8.self)
+        while let end = pending.firstIndex(of: "\n") {
+            let line = String(pending[..<end])
+            pending = String(pending[pending.index(after: end)...])
+            if let status = try? JSONDecoder().decode(Status.self, from: Data(line.utf8)) {
+                DispatchQueue.main.async { menu.show(status) }
+            }
         }
     }
+}
+
+/// Inside Beacon.app: run the Python side it carries, with its own node for the browser, logging to ~/Library/Logs.
+func startBeacon() {
+    let resources = Bundle.main.resourceURL!
+    let logs = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/Beacon")
+    try? FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
+    let log = logs.appendingPathComponent("beacon.log")
+    FileManager.default.createFile(atPath: log.path, contents: nil)
+    let python = Process()
+    python.executableURL = resources.appendingPathComponent("python/bin/python3")
+    python.arguments = ["-s", resources.appendingPathComponent("beacon/main.py").path]  // -s: no user site-packages
+    python.currentDirectoryURL = resources.appendingPathComponent("beacon")
+    python.environment = ProcessInfo.processInfo.environment.merging([
+        "BEACON_APP": "1",
+        "BEACON_PLAYWRIGHT": resources.appendingPathComponent("node/lib/node_modules/@playwright/mcp/cli.js").path,
+        "PATH": resources.appendingPathComponent("node/bin").path + ":/usr/bin:/bin:/usr/sbin:/sbin",
+        "PYTHONDONTWRITEBYTECODE": "1",  // the app's own folder is signed and read-only
+    ]) { _, bundledValue in bundledValue }
+    let events = Pipe(), statuses = Pipe()
+    python.standardInput = events
+    python.standardOutput = statuses
+    python.standardError = try? FileHandle(forWritingTo: log)
+    python.terminationHandler = { _ in
+        DispatchQueue.main.async {
+            quitting = true
+            NSApp.terminate(nil)
+        }
+    }
+    do {
+        try python.run()
+    } catch {
+        NSAlert(error: error).runModal()
+        exit(1)
+    }
+    beacon = events.fileHandleForWriting
+    started = true
+    listen(to: statuses.fileHandleForReading)
+}
+
+if bundled {
+    // System Settings quits Beacon to apply Screen Recording but does not always open it again, so Beacon does.
+    NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: nil) { _ in
+        guard !quitting else { return }
+        let reopen = Process()
+        reopen.executableURL = URL(fileURLWithPath: "/bin/sh")
+        reopen.arguments = ["-c", "sleep 1; /usr/bin/open \"$0\"", Bundle.main.bundlePath]  // once this copy has exited
+        try? reopen.run()
+    }
+    showOnboarding(bundled: true) { startBeacon() }
+} else {
+    listen(to: FileHandle.standardInput)
+    showOnboarding(bundled: false) {}
 }
 application.run()

@@ -32,20 +32,25 @@ Beacon: "Got it, Saturday."
 ## Features
 
 - **Any app, real input**: screenshots plus the real mouse and keyboard, or a Chrome window it drives directly.
+- **Your apps directly**: Calendar, Reminders, Notes, Music or Spotify, Messages, Mail and volume in a second or
+  less, no clicking. Texts and emails are read back for a spoken yes before they go.
+- **Answers out loud at once** in the same voice, then gets to work.
 - **Talk over it**: ask, redirect or stop mid-task; it listens while it works and while it speaks.
 - **Spoken yes before anything irreversible** in the browser modes, checked in code against the real page.
 - **Local speech recognition** with Moonshine; nothing you say leaves the Mac except the command text.
 - **Memory**: notes and files about you, read at the start of every conversation.
-- **Native menu bar item** with a push-to-talk key recorder and a wake-word switch.
-
-## Requirements
-
-- macOS on Apple silicon, with the Xcode command line tools (`xcode-select --install`)
-- Python 3.12 and [uv](https://docs.astral.sh/uv/)
-
-No API keys needed.
+- **Native Mac app**: one setup screen for every permission, and a short Settings window.
 
 ## Quick start
+
+No API keys needed. macOS on Apple silicon.
+
+**The app**: download `Beacon.dmg` from [Releases](https://github.com/pierceluu10/Beacon/releases), drag Beacon to
+Applications and open it. It is not notarized yet, so the first time macOS blocks it: open System Settings, Privacy
+and Security, and click **Open Anyway**. Beacon then shows one screen that asks for every permission it needs.
+Allow them, click Continue, and **hold ⌥Space** to talk.
+
+**From source** (needs the Xcode command line tools, Python 3.12 and [uv](https://docs.astral.sh/uv/)):
 
 ```bash
 git clone https://github.com/pierceluu10/Beacon.git && cd Beacon
@@ -61,9 +66,9 @@ only after a restart), and start Beacon again. Then **hold ⌥Space** (default k
 
 ### Talking to it
 
-- **Push to talk**: hold ⌥Space (the default; change it in the menu), speak, let go. Pressing it while Beacon talks cuts it off.
+- **Push to talk**: hold ⌥Space (the default; change it in Settings), speak, let go. Pressing it while Beacon talks cuts it off.
 - **"Hey Beacon"**: say the name and the command, or the name, wait for the chime, then speak. Works while it is
-  talking too. Turn it off in the menu to keep the microphone closed until you hold the key.
+  talking too. Turn it off in the menu or Settings to keep the microphone closed until you hold the key.
 
 After an answer you have 8 seconds to follow up without either. Mid-task you can **ask** ("what are you
 seeing?"), **redirect** ("make it Saturday") or **stop** ("stop", "never mind").
@@ -71,13 +76,13 @@ seeing?"), **redirect** ("make it Saturday") or **stop** ("stop", "never mind").
 ### The menu bar
 
 The mark shows a microphone while it hears you, pulsing dots while it works, a waveform while it talks, and dims
-when off. The menu holds the wake-word switch, the push-to-talk key recorder, Memory, where it works (**My whole
-Mac**, **My Chrome** or **Separate Chrome window**), Turn Off and Quit. Choices are saved in
-`~/.beacon/settings.json`.
+when off. The menu holds the wake-word switch, Settings, Turn Off and Quit. **Settings** holds the push-to-talk key,
+where it works (**Whole Mac**, **My Chrome** or **Separate Chrome window**), Memory, permissions and Open at login.
+Choices are saved in `~/.beacon/settings.json`.
 
 ### Memory
 
-**Memory…** opens notes (`~/.beacon/memory.md`: who you are, how you like things done) and files
+**Memory** (in Settings) opens notes (`~/.beacon/memory.md`: who you are, how you like things done) and files
 (`~/.beacon/memory/`: PDFs, images and text are read). Both go into each new conversation. In the browser modes the
 memory folder is the only place uploads come from. Never put passwords in memory.
 
@@ -144,7 +149,7 @@ trusting the model:
 | `inspect.js` | Runs in the page to describe the element a click or key press would hit, so the gate judges the real DOM, not the model's description. |
 | `everyday.py` | Reads the address and title of the front tab of your everyday Chrome when that Chrome is the app in front. |
 | `front_tab.js` | The macOS script `everyday.py` runs. It addresses the Chrome in front by process id, because every Chrome answers to the same name. |
-| `menubar.py`, `menubar.swift`, `mark.png` | The menu bar item, its menu, the key recorder and the Memory window: a small native helper, compiled on first run (needs `xcode-select --install`). |
+| `menubar.py`, `app/`, `mark.png` | The menu bar item, onboarding, Settings, the key recorder and the Memory window: native Swift, compiled on first run from a clone (needs `xcode-select --install`), or Beacon.app's own executable. |
 | `mac.py` | The whole-Mac mode: screenshots, mouse and keyboard through Anthropic's computer toolset. |
 | `prompt.txt`, `mac_prompt.txt` | Short public prompts, for local testing with your own `ANTHROPIC_API_KEY`. On Beacon's free credit the server uses Beacon's own prompts instead. |
 

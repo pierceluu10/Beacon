@@ -62,6 +62,7 @@ dependencies = [
     { name = "mcp" },
     { name = "moonshine-voice" },
     { name = "pyobjc-framework-applicationservices" },
+    { name = "pyobjc-framework-eventkit" },
     { name = "pyobjc-framework-quartz" },
     { name = "sounddevice" },
 ]
@@ -78,6 +79,7 @@ requires-dist = [
     { name = "mcp", specifier = "==2.3.0" },
     { name = "moonshine-voice", specifier = "==0.1.6" },
     { name = "pyobjc-framework-applicationservices", specifier = ">=13.0" },
+    { name = "pyobjc-framework-eventkit", specifier = ">=13.0" },
     { name = "pyobjc-framework-quartz", specifier = ">=13.0" },
     { name = "sounddevice", specifier = "==0.5.6" },
 ]
@@ -572,11 +574,11 @@ crypto = [
 
 [[package]]
 name = "pyobjc-core"
-version = "13.0"
+version = "13.1"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/83/58/7bab095330b8893e1ac58f3cf9710462c3242b600f8fa5db0d5dda795775/pyobjc_core-13.0.tar.gz", hash = "sha256:ffe154462d14aa4852f424e9116f17b5f8d44f78fc0f6c4727e721a5fa7177da", size = 1083172, upload-time = "2026-10-30T10:45:39.835Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/36/5f/b14b6b66a38f628af7a0983728f8d7360f17b68075bcd86631872aa7bb71/pyobjc_core-13.1.tar.gz", hash = "sha256:fd73c9020389c325d2045992134a8d89f8f554b46084c8ff36fe05a54bc9996e", size = 1084546, upload-time = "2026-11-24T20:24:42.003Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/68/ac/783ecf1c5045792fb51ad18e0131ff64e33ed9dee9921766c14e03eb27db/pyobjc_core-13.0-cp312-cp312-macosx_10_13_universal2.whl", hash = "sha256:5818e3d8cc2677a1e767968ebfe3bc0cb7f80c1f7c19c653ee25ef1cc1b3e188", size = 6716501, upload-time = "2026-10-30T10:32:46.2Z" },
+    { url = "https://files.pythonhosted.org/packages/22/52/f8e991a89c6795045a608dcb04486efb1a0bb5b6ac7440b3d6be9414d746/pyobjc_core-13.1-cp312-cp312-macosx_10_13_universal2.whl", hash = "sha256:0882594c79adee620a30dcb9ef370dcc2d40c43d5039aa44432b2d36b5af00ff", size = 770376, upload-time = "2026-11-24T20:13:09.121Z" },
 ]
 
 [[package]]
@@ -596,14 +598,14 @@ wheels = [
 
 [[package]]
 name = "pyobjc-framework-cocoa"
-version = "13.0"
+version = "13.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pyobjc-core" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/30/50/55a8779d35f1f86d795264cbd6fe62e35b2cf4fb8343fc888e99268c988a/pyobjc_framework_cocoa-13.0.tar.gz", hash = "sha256:bb7a23941fc8d7866578dbc84e56140efd343a1d28510f530dd1dbf80807daf4", size = 3135308, upload-time = "2026-10-30T10:46:03.982Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/8d/f9/20f550e334092a7e762fc9a9e8214ea4750b622c08b594c20782910daa31/pyobjc_framework_cocoa-13.1.tar.gz", hash = "sha256:2f373dedbfffc236ed2f6278b45ea5f053940e621a486b2e9f4d23a06b06ba22", size = 3135708, upload-time = "2026-11-24T20:25:04.293Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/ea/44/98d626726809da517c757d77e2888d34eaf758ebad908effb8d0b60c8118/pyobjc_framework_cocoa-13.0-cp312-cp312-macosx_10_13_universal2.whl", hash = "sha256:e1618d315939c9fae57cb858d4db496ec61f82495ce6a877398131ee494fc19d", size = 391597, upload-time = "2026-10-30T10:35:16.217Z" },
+    { url = "https://files.pythonhosted.org/packages/4a/87/1d78863d3fbbaba5b3b04dc7316c598c95948eeced8c4acc3bb59e0bd9b0/pyobjc_framework_cocoa-13.1-cp312-cp312-macosx_10_13_universal2.whl", hash = "sha256:97c0be3d7142597a7d895fe5e79721e9d2500a472136c017f0cbf27b18d3dda1", size = 391700, upload-time = "2026-11-24T20:15:12.523Z" },
 ]
 
 [[package]]
@@ -618,6 +620,19 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/fb/8c/6521bee7ae7a25ff7cf2ac91078f06a50a2ecf6ef35068108e18f542b398/pyobjc_framework_coretext-13.0.tar.gz", hash = "sha256:0ee3b7e886ffa4be769402c5341b2101d949e31a33d1a468d64b3a3579d2aea1", size = 97797, upload-time = "2026-10-30T10:46:20.71Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/40/64/b9c6531a3c7b9e7bbd574fd4a9eb7ee6c2a786977be8852533c5b080919a/pyobjc_framework_coretext-13.0-cp312-cp312-macosx_10_13_universal2.whl", hash = "sha256:d8e36723d180bd8c63d93001683feb80c84760a78083152379f921de62bfc9d5", size = 31160, upload-time = "2026-10-30T10:37:06.813Z" },
+]
+
+[[package]]
+name = "pyobjc-framework-eventkit"
+version = "13.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pyobjc-core" },
+    { name = "pyobjc-framework-cocoa" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/7f/f9/e783d5e1586aaf4c89941170a55a0225c80fb83251534ddd4688079f9add/pyobjc_framework_eventkit-13.1.tar.gz", hash = "sha256:7d4f726e2db8bc992dc2990176fb16d23a48a94a479cd95db17a791b641026ea", size = 33578, upload-time = "2026-11-24T20:25:28.844Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/03/94/fd94c937503e21061a9c2f74ddb5543335b49916ff2d9d3bce0f09effa55/pyobjc_framework_eventkit-13.1-py2.py3-none-any.whl", hash = "sha256:79faf103e40b7ad5b503fe6c488e1c3c5a07dccf5a5ac24877182b7266754d55", size = 6925, upload-time = "2026-11-24T20:17:27.296Z" },
 ]
 
 [[package]]

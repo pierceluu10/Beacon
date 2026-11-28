@@ -1,6 +1,7 @@
 """Claude operating the whole Mac: it sees the screen and moves the real mouse and keyboard (Anthropic's computer toolset)."""
 import asyncio
 import base64
+import os
 import tempfile
 from datetime import datetime
 from pathlib import Path
@@ -9,16 +10,20 @@ import Quartz
 from anthropic import DEFAULT_TIMEOUT, Timeout
 from ApplicationServices import AXIsProcessTrustedWithOptions, kAXTrustedCheckOptionPrompt
 
-from agent import (ASK_TOOL, CACHED, INTERRUPTED, KEPT_BLOCK_TYPES, MAX_TOKENS, NO_ANSWER, NOW, OUT_OF_STEPS,
-                   REQUEST_TIMEOUT_SECONDS, WARMUP, Ask, Conversation, Narrate)
+import apps
+from agent import (ASK_TOOL, CACHED, OUTPUT, INTERRUPTED, KEPT_BLOCK_TYPES, MAX_TOKENS, NO_ANSWER, NOW, OUT_OF_STEPS,
+                   REQUEST_TIMEOUT_SECONDS, WARMUP, Ask, Confirm, Conversation, Narrate)
 from credit import claude
 from memory import Memory
+from timing import span
 
 TOOLSET = "computer"
-TOOLS = [{"type": "computer_toolset_20260801"}, ASK_TOOL]
+TOOLS = [{"type": "computer_toolset_20260801"}, ASK_TOOL, *apps.APP_TOOLS]
 MAX_STEPS = 60
 KEPT_SCREENS = 10  # older ones turn stale, keeping a prompt under Haiku's 100K-token line
-STALE_SCREEN = "(older screenshot removed)"
+# Without the second sentence, Haiku read its own earlier description as made up and went to look again.
+STALE_SCREEN = "(older screenshot removed to save space; what you said about it at the time still stands)"
+SCREEN_NOW = "The screen right now:"
 GLANCE = "glance.png"  # the capture for a quick reply, kept apart from the task's own
 OK = "OK"
 NOT_EXECUTED = "Not executed: an earlier computer action in this turn failed."
@@ -48,8 +53,8 @@ KEY_CODES = {  # macOS virtual key codes on the ANSI layout, by the lower-case n
     "delete": 117, "home": 115, "end": 119, "page_up": 116, "pageup": 116, "prior": 116, "page_down": 121,
     "pagedown": 121, "next": 121, "left": 123, "right": 124, "down": 125, "up": 126, "f1": 122, "f2": 120, "f3": 99,
     "f4": 118, "f5": 96, "f6": 97, "f7": 98, "f8": 100, "f9": 101, "f10": 109, "f11": 103, "f12": 111}
-NO_PERMISSION = ("macOS is not letting this terminal {missing}. Allow it in System Settings, Privacy and Security, "
-                 "then quit and reopen the terminal and start Beacon again.")
+NO_PERMISSION = ("macOS is not letting {who} {missing}. Allow it in System Settings, Privacy and Security, "
+                 "then {restart}.")
 
 
 class MacPermissionError(Exception):
@@ -191,15 +196,19 @@ def check_permissions() -> None:
     if not AXIsProcessTrustedWithOptions({kAXTrustedCheckOptionPrompt: True}):
         missing.append("control the mouse and keyboard (Accessibility)")
     if missing:
-        raise MacPermissionError(NO_PERMISSION.format(missing=" or ".join(missing)))
+        in_app = bool(os.environ.get(apps.IN_APP))
+        raise MacPermissionError(NO_PERMISSION.format(
+            who="Beacon" if in_app else "this terminal", missing=" or ".join(missing),
+            restart="relaunch Beacon" if in_app else "quit and reopen the terminal and start Beacon again"))
 
 
 class MacAgent(Conversation):
     """One conversation that operates the whole Mac. Same surface as agent.Agent, so the voice loop does not care which."""
 
-    def __init__(self, model: str, memory: Memory, system: list[dict], ask: Ask, narrate: Narrate) -> None:
+    def __init__(self, model: str, memory: Memory, system: list[dict], confirm: Confirm, ask: Ask,
+                 narrate: Narrate) -> None:
         super().__init__(memory, narrate)
-        self._model, self._ask = model, ask
+        self._model, self._confirm, self._ask = model, confirm, ask
         self._system = system
         self._anthropic = claude(timeout=Timeout(REQUEST_TIMEOUT_SECONDS, connect=DEFAULT_TIMEOUT.connect))
         self._screens: list[dict] = []
@@ -214,6 +223,7 @@ class MacAgent(Conversation):
 
     async def warm_up(self) -> None:
         await self._anthropic.messages.create(model=self._model, max_tokens=0, system=self._system, tools=TOOLS,
+                                              output_config=OUTPUT,
                                               messages=[{"role": "user", "content": WARMUP}])
 
     def forget(self) -> None:
@@ -231,11 +241,13 @@ class MacAgent(Conversation):
         """Carry out one spoken command and return the sentence to speak back. Cancel the task to interrupt it."""
         self._keep_screens(0)  # images are large: a command keeps only its own latest screenshots
         try:
-            asked = f"{command}\n\n{NOW.format(now=datetime.now())}"
-            self._messages.append(self._opening(command, [{"type": "text", "text": asked}]))
+            asked = f"{command}\n\n{NOW.format(now=datetime.now())}\n\n{SCREEN_NOW}"
+            screen = await self._mac.capture()  # so a follow-up starts from what is there, not a removed screenshot
+            self._screens.append(screen)
+            self._messages.append(self._opening(command, [{"type": "text", "text": asked}, screen]))
             for _ in range(MAX_STEPS):
                 reply = await self._step(self._anthropic.messages.create(
-                    model=self._model, max_tokens=MAX_TOKENS, system=self._system, tools=TOOLS,
+                    model=self._model, max_tokens=MAX_TOKENS, system=self._system, tools=TOOLS, output_config=OUTPUT,
                     messages=self._messages, cache_control=CACHED))
                 if reply is None:
                     continue
@@ -269,12 +281,16 @@ class MacAgent(Conversation):
             if call.name == ASK_TOOL["name"]:
                 answer = await self._ask(str(call.input.get("question", "")))
                 result["content"] = f"The user said: {answer}" if answer else NO_ANSWER
+            elif call.name in apps.APPS:
+                with span("app", tool=call.name):
+                    result["content"] = await apps.use(call.name, call.input, self._confirm)
             else:
                 result["toolset_name"] = TOOLSET
                 try:
                     if failed:
                         raise MacActionError(NOT_EXECUTED)
-                    result["content"] = await self._mac.act(call.name, call.input)
+                    with span("computer", action=call.name):
+                        result["content"] = await self._mac.act(call.name, call.input)
                     self._screens += [block for block in result["content"] if block["type"] == "image"]
                     self._keep_screens(KEPT_SCREENS)
                 except (MacActionError, KeyError, TypeError, ValueError) as error:  # KeyError and co: a malformed call

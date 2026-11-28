@@ -1,6 +1,7 @@
 """Claude driving a visible Chrome through the Playwright MCP server. Every browser call passes the gate first."""
 import asyncio
 import json
+import os
 import re
 from collections.abc import Awaitable, Callable
 from contextlib import AsyncExitStack
@@ -13,12 +14,15 @@ from mcp import ClientSession, MCPError, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from mcp.types import CONNECTION_CLOSED, REQUEST_TIMEOUT
 
+import apps
 import everyday
 from credit import claude
 from gate import ALLOW, UNREADABLE, Verdict, blocked, judge, judge_dialog, to_inspect, url_refusal
 from memory import Memory
+from timing import span
 
 PLAYWRIGHT_MCP = "@playwright/mcp@0.0.86"
+PLAYWRIGHT_CLI = "BEACON_PLAYWRIGHT"  # Beacon.app sets it to the copy of PLAYWRIGHT_MCP it carries, run by its own node
 EXTENSION_TOKEN_VARIABLE = "PLAYWRIGHT_MCP_EXTENSION_TOKEN"  # with it the Playwright Extension connects without a dialog
 CURRENT_TAB = re.compile(r"^- (\d+): \(current\)", re.MULTILINE)
 NAVIGATION_TIMEOUT_MILLISECONDS = "20000"
@@ -61,7 +65,9 @@ SNAPSHOT_CHARACTER_LIMIT = 40_000
 SNAPSHOT_CUT = "\n(snapshot cut off here; use browser_find to locate anything below)"
 KEPT_BLOCK_TYPES = ("text", "tool_use")  # thinking blocks are bound to the unedited history, which pruning rewrites
 CACHED = {"type": "ephemeral"}
+USAGE_FIELDS = {"input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"}
 MAX_TOKENS = 4096
+OUTPUT = {"effort": "low"}  # Haiku thinks less per step: most steps are a click, not a puzzle
 REQUEST_TIMEOUT_SECONDS = 60
 MAX_STEPS = 40
 # A command keeps only its latest snapshots: 4 of the largest stay under Haiku's 100K-token line, above which it costs 5x
@@ -141,7 +147,10 @@ class Conversation:
         the history in its place."""
         self._thinking = asyncio.ensure_future(request)
         try:
-            return await self._thinking
+            with span("model") as fields:
+                reply = await self._thinking
+                fields.update(reply.usage.model_dump(include=USAGE_FIELDS), stop=reply.stop_reason)
+            return reply
         except asyncio.CancelledError:
             if asyncio.current_task().cancelling():  # a stop, not tell()
                 raise
@@ -179,9 +188,12 @@ class Agent(Conversation):
         own_window = ["--browser", "chrome", "--user-data-dir", str(profile_dir), *(["--headless"] if headless else [])]
         self._system = system
         # cwd is the server's only upload root; --output-dir keeps its own files out of it.
+        bundled = os.environ.get(PLAYWRIGHT_CLI)
+        command, server = ("node", [bundled]) if bundled else ("npx", ["-y", PLAYWRIGHT_MCP])
         self._server = StdioServerParameters(
-            command="npx", cwd=str(upload_dir), env={EXTENSION_TOKEN_VARIABLE: extension_token} if extension_token else None,
-            args=["-y", PLAYWRIGHT_MCP, *(["--extension"] if extension_token else own_window),
+            command=command, cwd=str(upload_dir),
+            env={EXTENSION_TOKEN_VARIABLE: extension_token} if extension_token else None,
+            args=[*server, *(["--extension"] if extension_token else own_window),
                   "--output-dir", str(profile_dir.parent / "playwright-output"), "--snapshot-mode", "none", "--codegen", "none",
                   "--timeout-navigation", NAVIGATION_TIMEOUT_MILLISECONDS, "--timeout-settle", SETTLE_MILLISECONDS])
         self._anthropic = claude(timeout=Timeout(REQUEST_TIMEOUT_SECONDS, connect=DEFAULT_TIMEOUT.connect))
@@ -203,7 +215,7 @@ class Agent(Conversation):
         await self._browser.initialize()
         listed = await self._browser.list_tools()
         self._tools = [{"name": tool.name, "description": tool.description, "input_schema": tool.input_schema}
-                       for tool in listed.tools if tool.name in BROWSER_TOOLS] + [ASK_TOOL]
+                       for tool in listed.tools if tool.name in BROWSER_TOOLS] + [ASK_TOOL, *apps.APP_TOOLS]
         # The window opens now, not on the first command.
         opened = await self._browser.call_tool("browser_tabs", {"action": "list"})
         if opened.is_error:
@@ -223,6 +235,7 @@ class Agent(Conversation):
     async def warm_up(self) -> None:
         """Writes the prompt cache and opens the connection: the first request of a process is the slow one."""
         await self._anthropic.messages.create(model=self._model, max_tokens=0, system=self._system, tools=self._tools,
+                                              output_config=OUTPUT,
                                               messages=[{"role": "user", "content": WARMUP}])
 
     def forget(self) -> None:
@@ -250,7 +263,7 @@ class Agent(Conversation):
             self._messages.append(self._opening(command, [{"type": "text", "text": asked}, self._page_block(snapshot)]))
             for _ in range(MAX_STEPS):
                 reply = await self._step(self._anthropic.messages.create(
-                    model=self._model, max_tokens=MAX_TOKENS, system=self._system, tools=self._tools,
+                    model=self._model, max_tokens=MAX_TOKENS, system=self._system, tools=self._tools, output_config=OUTPUT,
                     messages=self._messages, cache_control=CACHED))
                 if reply is None:
                     continue
@@ -319,6 +332,9 @@ class Agent(Conversation):
         if tool == ASK_TOOL["name"]:
             answer = await self._ask(str(arguments.get("question", "")))
             return f"The user said: {answer}" if answer else NO_ANSWER
+        if tool in apps.APPS:
+            with span("app", tool=tool):
+                return await apps.use(tool, arguments, self._confirm)
         if tool not in BROWSER_TOOLS:
             return f"Unknown tool {tool}."
         try:
@@ -329,7 +345,8 @@ class Agent(Conversation):
             return verdict.text
         if verdict.decision == "ask" and not await self._confirm(verdict.text):
             return DECLINED
-        return await self._call(tool, arguments) or NOTHING_TO_SAY
+        with span("browser", tool=tool):
+            return await self._call(tool, arguments) or NOTHING_TO_SAY
 
     async def _verdict(self, tool: str, arguments: dict) -> Verdict:
         refusal = url_refusal(arguments["url"], self._blocked_hosts) if "url" in arguments else None

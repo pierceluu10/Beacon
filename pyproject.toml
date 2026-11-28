@@ -9,6 +9,7 @@ dependencies = [
     "mcp==2.3.0",
     "moonshine-voice==0.1.6",
     "pyobjc-framework-applicationservices>=13.0",
+    "pyobjc-framework-eventkit>=13.0",
     "pyobjc-framework-quartz>=13.0",
     "sounddevice==0.5.6",
 ]

@@ -786,6 +786,9 @@ class ScriptedMouth:
     async def speak(self, text: str) -> None:
         self._spoken.append(text)
 
+    async def prepare(self, lines: list[str]) -> None:
+        pass
+
 
 class ScriptedSide:
     """Stands in for side.Side: a fixed greeting, and a fixed reply to anything said mid-task."""
@@ -970,14 +973,14 @@ def test_only_a_spoken_stop_ends_a_task_with_stopped(heard: list[str], interrupt
 def test_words_said_to_beacon_mid_task_get_a_quick_reply_and_the_task_goes_on(said: str, replied: list[str]) -> None:
     ended = carry_out_while([said], side.Reply("I can see your inbox.", side.CONTINUE))
     assert [line.rstrip("?.") for line in ended.side.replied] == [line.rstrip("?.") for line in replied], ended.side.replied
-    assert ended.spoken == ["I can see your inbox."] * len(replied), f"the user heard {ended.spoken}"
+    assert ended.spoken == ["I can see your inbox."] * len(replied), ended.spoken
     assert ended.line is None and ended.agent.told == [], f"the task ended with {ended.line!r} or was told {ended.agent.told}"
 
 
 def test_a_change_of_plan_mid_task_is_handed_to_the_task() -> None:
     ended = carry_out_while(["Hey Beacon, use the other account instead."], side.Reply("Okay, switching.", side.CHANGE))
     assert ended.agent.told == ["use the other account instead"], f"the task was told {ended.agent.told}"
-    assert ended.spoken == ["Okay, switching."] and ended.line is None, f"heard {ended.spoken}, ended {ended.line!r}"
+    assert ended.spoken == ["Okay, switching."] and ended.line is None, (ended.spoken, ended.line)
 
 
 def test_a_stop_in_other_words_ends_the_task_with_the_reply() -> None:
@@ -1083,11 +1086,15 @@ class ScriptedMac:
         return [{"type": "text", "text": mac.OK}]
 
 
+async def NO_CONFIRM(question: str) -> bool:
+    raise AssertionError(f"asked {question!r}, but nothing here needs a yes")
+
+
 def test_whole_mac_results_echo_the_toolset_and_stop_the_batch_at_the_first_failure() -> None:
     async def answer(question: str) -> str:
         return "the second one"
 
-    driver = mac.MacAgent("claude-opus-5-5", no_memory(Path()), "prompt", answer, silent)
+    driver = mac.MacAgent("claude-opus-5-5", no_memory(Path()), "prompt", NO_CONFIRM, answer, silent)
     driver._mac = ScriptedMac()
     calls = [SimpleNamespace(id=str(number), name=name, input=arguments) for number, (name, arguments) in enumerate([
         ("left_click", {"coordinate": [10, 20]}), ("key", {"text": "bogus"}), ("type", {"text": "never typed"}),
