@@ -2,6 +2,7 @@
 // main.swift owns the top-level code and calls showOnboarding, showSettings and settingsModel.
 import AVFoundation
 import EventKit
+import ScreenCaptureKit
 import ServiceManagement
 import SwiftUI
 
@@ -84,7 +85,12 @@ enum Permission: CaseIterable, Identifiable {
         case .screen:
             forgetEarlierBuilds("ScreenCapture")
             askedForScreen = true
-            if !CGRequestScreenCaptureAccess() { openPrivacy("Privacy_ScreenCapture") }
+            // CGRequestScreenCaptureAccess asks only once per app, so after the reset it may add nothing; trying to list
+            // the screen's content always puts Beacon in the Screen Recording list for the user to switch on.
+            Task {
+                _ = try? await SCShareableContent.current
+                if !CGPreflightScreenCaptureAccess() { openPrivacy("Privacy_ScreenCapture") }
+            }
         case .calendar:
             Task { await requestCalendar() }
         }
