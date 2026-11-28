@@ -9,12 +9,12 @@ import apps
 
 @pytest.fixture
 def scripts(monkeypatch: pytest.MonkeyPatch) -> list[tuple]:
-    """Every AppleScript run, as (script, *arguments); a contact lookup finds Mom's number."""
+    """Every AppleScript run, as (script, *arguments); Messages has a conversation with Mom."""
     ran = []
 
     async def osascript(script: str, *arguments: str) -> str:
         ran.append((script, *arguments))
-        return "+1 555 0100" if script == apps.CONTACT else ""
+        return "iMessage;-;+15550100\tMom Luu" if script == apps.MESSAGES_FIND and arguments == ("Mom",) else ""
 
     monkeypatch.setattr(apps, "osascript", osascript)
     return ran
@@ -28,14 +28,21 @@ def answering(yes: bool, asked: list[str]):
 
 
 @pytest.mark.parametrize("yes", [True, False])
-def test_a_text_to_a_contact_is_sent_only_after_a_spoken_yes(scripts: list, yes: bool) -> None:
+def test_a_text_goes_into_the_existing_conversation_only_after_a_spoken_yes(scripts: list, yes: bool) -> None:
+    """Found through Messages' own conversations: no Contacts permission, and the number the user already texts."""
     asked = []
     said = asyncio.run(apps.use("messages", {"action": "send", "to": "Mom", "text": "Running late"}, answering(yes, asked)))
-    sent = [run for run in scripts if run[0] == apps.MESSAGES_SEND]
+    sent = [run for run in scripts if run[0] in (apps.MESSAGES_TO_CHAT, apps.MESSAGES_SEND)]
     print(said, asked, scripts)
-    assert asked == ["Text Mom saying: Running late?"], asked
-    assert sent == ([(apps.MESSAGES_SEND, "+1 555 0100", "Running late")] if yes else []), sent
-    assert said == ("Sent to Mom." if yes else apps.DECLINED)
+    assert asked == ["Text Mom Luu saying: Running late?"], asked
+    assert sent == ([(apps.MESSAGES_TO_CHAT, "iMessage;-;+15550100", "Running late")] if yes else []), sent
+    assert said == ("Sent to Mom Luu." if yes else apps.DECLINED)
+    assert not any("Contacts" in run[0] for run in scripts), "texting asked the Contacts app"
+
+
+def test_a_number_with_no_conversation_yet_starts_one(scripts: list) -> None:
+    said = asyncio.run(apps.use("messages", {"action": "send", "to": "+1 555 0199", "text": "Hi"}, answering(True, [])))
+    assert scripts[-1] == (apps.MESSAGES_SEND, "+1 555 0199", "Hi") and said == "Sent to +1 555 0199.", (scripts, said)
 
 
 def test_an_email_address_is_used_as_given_and_the_mail_waits_for_a_yes(scripts: list) -> None:
@@ -45,13 +52,9 @@ def test_an_email_address_is_used_as_given_and_the_mail_waits_for_a_yes(scripts:
     assert asked == ["Email bo@example.com about Lunch?"] and said == apps.DECLINED and scripts == [], (asked, scripts)
 
 
-def test_a_contact_without_a_number_is_reported_rather_than_guessed(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def osascript(script: str, *arguments: str) -> str:
-        return ""
-
-    monkeypatch.setattr(apps, "osascript", osascript)
+def test_a_name_with_no_conversation_asks_for_a_number_rather_than_guessing(scripts: list) -> None:
     said = asyncio.run(apps.use("messages", {"action": "send", "to": "Zed", "text": "hi"}, answering(True, [])))
-    assert said.startswith("Error: No contact named 'Zed'"), said
+    assert said == "Error: No conversation with 'Zed' in Messages. Ask the user for their number.", said
 
 
 @pytest.mark.parametrize("spotify, script", [(True, 'tell application "Spotify" to pause'),

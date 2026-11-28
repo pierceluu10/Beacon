@@ -59,7 +59,8 @@ APP_TOOLS = [
     _action("music", ["play", "pause", "next", "previous", "now_playing"],
             "Controls Spotify when it is open, otherwise Apple Music. play with `query` plays a matching playlist or song "
             "from the Apple Music library; for anything else on Spotify, use the browser.", {"query": TEXT}),
-    _action("messages", ["send"], "Send an iMessage. `to` is a contact's name, a phone number or an email address.",
+    _action("messages", ["send"], "Send an iMessage into the user's conversation with someone. `to` is their name as "
+            "Messages shows it, a phone number or an email address.",
             {"to": TEXT, "text": TEXT}, ("to", "text")),
     _action("mail", ["send"], "Send an email from Apple Mail. `to` is a contact's name or an email address.",
             {"to": TEXT, "subject": TEXT, "body": TEXT}, ("to", "subject", "body")),
@@ -204,13 +205,36 @@ end run'''
 PLAYER = {"pause": "pause", "next": "next track", "previous": "previous track", "play": "play"}
 NOW_PLAYING = ('tell application "{app}"\nif player state is stopped then return "Nothing is playing."\n'
                'return name of current track & " by " & artist of current track\nend tell')
-CONTACT = '''on run {wanted, kind}
+CONTACT_EMAIL = '''on run {wanted}
 tell application "Contacts"
   set matches to (people whose name contains wanted)
   if matches is {} then return ""
-  if kind is "email" then return value of first email of item 1 of matches
-  return value of first phone of item 1 of matches
+  return value of first email of item 1 of matches
 end tell
+end run'''
+# The one-to-one conversation whose person's name or handle contains `wanted`, as "chat id<TAB>name". Messages already
+# knows the names, so this needs no Contacts permission and texts the number the user already texts them on.
+MESSAGES_FIND = '''on run {wanted}
+tell application "Messages"
+  repeat with conversation in chats
+    if (count of participants of conversation) is 1 then
+      set person to item 1 of participants of conversation
+      set label to ""
+      try
+        set label to full name of person
+      end try
+      if label is missing value then set label to ""
+      if label contains wanted or handle of person contains wanted then
+        if label is "" then set label to handle of person
+        return (id of conversation) & tab & label
+      end if
+    end if
+  end repeat
+end tell
+return ""
+end run'''
+MESSAGES_TO_CHAT = '''on run {conversation, message}
+tell application "Messages" to send message to chat id conversation
 end run'''
 MESSAGES_SEND = '''on run {handle, message}
 tell application "Messages"
@@ -247,29 +271,27 @@ async def music(arguments: dict) -> str:
     return "Done."
 
 
-async def _handle(to: str, kind: str) -> str:
-    """A phone number or email address as given, or the first one on the contact card whose name contains `to`."""
-    if HANDLE.match(to.strip()):
-        return to.strip()
-    found = await osascript(CONTACT, to, kind)
-    if not found:
-        raise AppError(f"No contact named {to!r} has a {'email address' if kind == 'email' else 'phone number'}. "
-                       "Ask the user for it.")
-    return found
-
-
 async def messages(arguments: dict, confirm: Confirm) -> str:
-    to, text = str(arguments["to"]), str(arguments["text"])
-    handle = await _handle(to, "phone")
-    if not await confirm(f"Text {to} saying: {text[:SPOKEN_TEXT_CHARACTERS]}?"):
+    to, text = str(arguments["to"]).strip(), str(arguments["text"])
+    found = await osascript(MESSAGES_FIND, to)
+    if found:
+        conversation, name = found.split("\t", 1)
+        script, target = MESSAGES_TO_CHAT, conversation
+    elif HANDLE.match(to):
+        script, target, name = MESSAGES_SEND, to, to  # someone new: a conversation starts
+    else:
+        raise AppError(f"No conversation with {to!r} in Messages. Ask the user for their number.")
+    if not await confirm(f"Text {name} saying: {text[:SPOKEN_TEXT_CHARACTERS]}?"):
         return DECLINED
-    await osascript(MESSAGES_SEND, handle, text)
-    return f"Sent to {to}."
+    await osascript(script, target, text)
+    return f"Sent to {name}."
 
 
 async def mail(arguments: dict, confirm: Confirm) -> str:
-    to, subject = str(arguments["to"]), str(arguments["subject"])
-    address = await _handle(to, "email")
+    to, subject = str(arguments["to"]).strip(), str(arguments["subject"])
+    address = to if HANDLE.match(to) else await osascript(CONTACT_EMAIL, to)
+    if not address:
+        raise AppError(f"No contact named {to!r} has an email address. Ask the user for it.")
     if not await confirm(f"Email {to} about {subject[:SPOKEN_TEXT_CHARACTERS]}?"):
         return DECLINED
     await osascript(MAIL_SEND, address, subject, str(arguments["body"]))
