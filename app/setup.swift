@@ -83,6 +83,7 @@ enum Permission: CaseIterable, Identifiable {
             openPrivacy("Privacy_Accessibility")
         case .screen:
             forgetEarlierBuilds("ScreenCapture")
+            askedForScreen = true
             if !CGRequestScreenCaptureAccess() { openPrivacy("Privacy_ScreenCapture") }
         case .calendar:
             Task { await requestCalendar() }
@@ -127,7 +128,6 @@ enum Permission: CaseIterable, Identifiable {
 struct PermissionRow: View {
     let permission: Permission
     let granted: Bool
-    @State private var asked = false
 
     var body: some View {
         LabeledContent {
@@ -136,14 +136,8 @@ struct PermissionRow: View {
                     .foregroundStyle(.green)
                     .imageScale(.large)
                     .accessibilityLabel("Allowed")
-            } else if asked && permission == .screen && Bundle.main.bundleIdentifier != nil {
-                // macOS applies Screen Recording to a process only from its next launch
-                Button("Relaunch", action: relaunch)
             } else {
-                Button("Allow") {
-                    permission.request()
-                    asked = true
-                }
+                Button("Allow", action: permission.request)
             }
         } label: {
             Label {
@@ -312,6 +306,7 @@ func relaunch() {
     }
 }
 
+var askedForScreen = false
 var onboardingWindow: HostedWindow?
 var settingsWindow: HostedWindow?
 
@@ -320,7 +315,11 @@ var settingsWindow: HostedWindow?
 func showOnboarding(bundled: Bool, done: @escaping () -> Void) {
     let permissions = Permission.needed(bundled: bundled)
     if permissions.filter(\.required).allSatisfy(\.granted) { return done() }
-    let view = OnboardingView(permissions: permissions) { onboardingWindow?.window.close() }
+    let view = OnboardingView(permissions: permissions) {
+        // macOS applies Screen Recording from the app's next launch, so Continue relaunches once instead of starting
+        if bundled && askedForScreen && !Permission.screen.granted { return relaunch() }
+        onboardingWindow?.window.close()
+    }
     onboardingWindow = HostedWindow(title: "Welcome to Beacon", content: view) {
         onboardingWindow = nil
         done()
