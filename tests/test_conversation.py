@@ -175,12 +175,15 @@ def test_the_greeting_is_written_from_the_notes() -> None:
 class ScriptedMac:
     """Records actions; on the first one, the user speaks to the running task."""
 
-    def __init__(self, driver: mac.MacAgent, words: str) -> None:
+    def __init__(self, driver: mac.MacAgent, words: str = "") -> None:
         self.actions: list[str] = []
         self._driver, self._words = driver, words
 
+    async def capture(self, region: tuple | None = None, name: str = "screen.png") -> dict:
+        return {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "c2NyZWVu"}}
+
     async def act(self, name: str, arguments: dict) -> list[dict]:
-        if not self.actions:
+        if not self.actions and self._words:
             self._driver.tell(self._words)
         self.actions.append(name)
         return [{"type": "text", "text": mac.OK}]
@@ -209,8 +212,25 @@ def test_a_running_task_speaks_its_first_line_reads_memory_once_and_takes_words_
     assert len(openings) == 1, "the memory was sent again in the same conversation"
 
 
+def test_each_command_starts_from_a_fresh_screenshot_and_older_ones_say_they_still_stand(remembered: Memory) -> None:
+    """A follow-up whose screenshots were all removed read its own earlier answer as made up and went to look again."""
+    driver = mac.MacAgent(NEVER_SENT, remembered, "prompt", NO_CONFIRM, lambda question: None, lambda line: None)
+    driver._mac = ScriptedMac(driver)
+    driver._anthropic = ScriptedAnthropic(reply("end_turn", text("Your last message is from Sam.")),
+                                          reply("end_turn", text("Sam said hi.")))
+    asyncio.run(driver.run("read my messages"))
+    asyncio.run(driver.run("what did it say"))
+    sent = driver._anthropic.requests[1]["messages"]
+    openings = [message["content"] for message in sent if message["role"] == "user" and isinstance(message["content"], list)
+                and any(block.get("text", "").endswith(mac.SCREEN_NOW) for block in message["content"])]
+    print(openings)
+    assert len(openings) == 2 and openings[-1][-1]["type"] == "image", "the follow-up came without the screen"
+    assert openings[0][-1] == {"type": "text", "text": mac.STALE_SCREEN}, openings[0][-1]
+
+
 def test_words_that_arrive_as_the_task_finishes_carry_it_on(remembered: Memory) -> None:
     driver = mac.MacAgent(NEVER_SENT, remembered, "prompt", NO_CONFIRM, lambda question: None, lambda line: None)
+    driver._mac = ScriptedMac(driver)
     driver._anthropic = ScriptedAnthropic(reply("end_turn", text("Opened Notes.")), reply("end_turn", text("Added it.")))
     original = driver._anthropic.messages.create
 
@@ -243,6 +263,7 @@ def writing_forever(driver: mac.MacAgent) -> asyncio.Event:
 
 def test_words_said_while_the_model_writes_a_step_drop_that_step_and_reach_the_model_at_once(remembered: Memory) -> None:
     driver = mac.MacAgent(NEVER_SENT, remembered, "prompt", NO_CONFIRM, lambda question: None, lambda line: None)
+    driver._mac = ScriptedMac(driver)
     driver._anthropic = ScriptedAnthropic(reply("end_turn", text("Opened Gmail.")))
     writing = writing_forever(driver)
 
@@ -260,6 +281,7 @@ def test_words_said_while_the_model_writes_a_step_drop_that_step_and_reach_the_m
 
 def test_a_stop_while_the_model_writes_a_step_ends_the_task(remembered: Memory) -> None:
     driver = mac.MacAgent(NEVER_SENT, remembered, "prompt", NO_CONFIRM, lambda question: None, lambda line: None)
+    driver._mac = ScriptedMac(driver)
     driver._anthropic = ScriptedAnthropic()
     writing = writing_forever(driver)
 
@@ -409,12 +431,11 @@ def test_prepare_fetches_lines_without_playing_them_and_the_cache_keeps_the_most
     assert not list(voice_cache.glob("*.part"))
 
 
-def test_the_acknowledgement_fits_the_command_and_takes_turns() -> None:
+def test_only_a_question_gets_an_acknowledgement_and_they_take_turns() -> None:
     questions = [main.acknowledgement("What's the weather") for _ in range(3)]
-    orders = [main.acknowledgement("open YouTube") for _ in range(4)]
-    print(questions, orders)
-    assert sorted(questions) == sorted(main.ACKNOWLEDGEMENTS[True]), questions
-    assert sorted(orders) == sorted(main.ACKNOWLEDGEMENTS[False]), orders
+    print(questions)
+    assert sorted(questions) == sorted(main.ACKNOWLEDGEMENTS), questions
+    assert main.acknowledgement("open YouTube") is None
 
 
 @pytest.mark.parametrize("mode", [main.WINDOW, main.MAC])

@@ -21,7 +21,9 @@ TOOLSET = "computer"
 TOOLS = [{"type": "computer_toolset_20260801"}, ASK_TOOL, *apps.APP_TOOLS]
 MAX_STEPS = 60
 KEPT_SCREENS = 10  # older ones turn stale, keeping a prompt under Haiku's 100K-token line
-STALE_SCREEN = "(older screenshot removed)"
+# Without the second sentence, Haiku read its own earlier description as made up and went to look again.
+STALE_SCREEN = "(older screenshot removed to save space; what you said about it at the time still stands)"
+SCREEN_NOW = "The screen right now:"
 GLANCE = "glance.png"  # the capture for a quick reply, kept apart from the task's own
 OK = "OK"
 NOT_EXECUTED = "Not executed: an earlier computer action in this turn failed."
@@ -239,8 +241,10 @@ class MacAgent(Conversation):
         """Carry out one spoken command and return the sentence to speak back. Cancel the task to interrupt it."""
         self._keep_screens(0)  # images are large: a command keeps only its own latest screenshots
         try:
-            asked = f"{command}\n\n{NOW.format(now=datetime.now())}"
-            self._messages.append(self._opening(command, [{"type": "text", "text": asked}]))
+            asked = f"{command}\n\n{NOW.format(now=datetime.now())}\n\n{SCREEN_NOW}"
+            screen = await self._mac.capture()  # so a follow-up starts from what is there, not a removed screenshot
+            self._screens.append(screen)
+            self._messages.append(self._opening(command, [{"type": "text", "text": asked}, screen]))
             for _ in range(MAX_STEPS):
                 reply = await self._step(self._anthropic.messages.create(
                     model=self._model, max_tokens=MAX_TOKENS, system=self._system, tools=TOOLS, output_config=OUTPUT,
