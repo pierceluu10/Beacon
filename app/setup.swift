@@ -79,18 +79,15 @@ enum Permission: CaseIterable, Identifiable {
                 openPrivacy("Privacy_Microphone")
             }
         case .accessibility:
+            // After the reset macOS shows its own prompt, whose button opens the right page; opening it here too doubled up
             forgetEarlierBuilds("Accessibility")
             AXIsProcessTrustedWithOptions([kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary)
-            openPrivacy("Privacy_Accessibility")
         case .screen:
             forgetEarlierBuilds("ScreenCapture")
             askedForScreen = true
             // CGRequestScreenCaptureAccess asks only once per app, so after the reset it may add nothing; trying to list
-            // the screen's content always puts Beacon in the Screen Recording list for the user to switch on.
-            Task {
-                _ = try? await SCShareableContent.current
-                if !CGPreflightScreenCaptureAccess() { openPrivacy("Privacy_ScreenCapture") }
-            }
+            // the screen's content always puts Beacon in the list and shows macOS's prompt, which opens the right page.
+            Task { _ = try? await SCShareableContent.current }
         case .calendar:
             Task { await requestCalendar() }
         }
