@@ -7,14 +7,22 @@ import pytest
 import apps
 
 
+PEOPLE = [("iMessage;-;+15550100", "Mom Luu", "+15550100"),
+          ("iMessage;-;+15550111", "Katelyn Smith", "+15550111"),
+          ("SMS;-;+15550111", "Katelyn Smith", "+15550111"),  # the same person over SMS counts once
+          ("iMessage;-;+15550122", "John Park", "+15550122"),
+          ("iMessage;-;+15550133", "Jon Reyes", "+15550133"),
+          ("iMessage;-;+16135550144", "", "+16135550144")]
+
+
 @pytest.fixture
 def scripts(monkeypatch: pytest.MonkeyPatch) -> list[tuple]:
-    """Every AppleScript run, as (script, *arguments); Messages has a conversation with Mom."""
+    """Every AppleScript run, as (script, *arguments); Messages has conversations with these people."""
     ran = []
 
     async def osascript(script: str, *arguments: str) -> str:
         ran.append((script, *arguments))
-        return "iMessage;-;+15550100\tMom Luu" if script == apps.MESSAGES_FIND and arguments == ("Mom",) else ""
+        return "\n".join("\t".join(person) for person in PEOPLE) if script == apps.MESSAGES_PEOPLE else ""
 
     monkeypatch.setattr(apps, "osascript", osascript)
     return ran
@@ -38,6 +46,30 @@ def test_a_text_goes_into_the_existing_conversation_only_after_a_spoken_yes(scri
     assert sent == ([(apps.MESSAGES_TO_CHAT, "iMessage;-;+15550100", "Running late")] if yes else []), sent
     assert said == ("Sent to Mom Luu." if yes else apps.DECLINED)
     assert not any("Contacts" in run[0] for run in scripts), "texting asked the Contacts app"
+
+
+@pytest.mark.parametrize("spoken", ["kaitlan", "Caitlin", "Katelynn", "kaitlyn smith", "Kat"])
+def test_a_name_spelled_or_heard_differently_still_finds_the_person_and_the_question_says_who(scripts: list,
+                                                                                               spoken: str) -> None:
+    asked = []
+    said = asyncio.run(apps.use("messages", {"action": "send", "to": spoken, "text": "hi"}, answering(True, asked)))
+    print(spoken, asked, said)
+    assert asked == ["Text Katelyn Smith saying: hi?"], asked
+    assert scripts[-1] == (apps.MESSAGES_TO_CHAT, "iMessage;-;+15550111", "hi"), scripts
+
+
+def test_two_people_who_sound_alike_are_asked_about_rather_than_guessed(scripts: list) -> None:
+    asked = []
+    said = asyncio.run(apps.use("messages", {"action": "send", "to": "Jon", "text": "hi"}, answering(True, asked)))
+    assert said == "Error: 'Jon' could be John Park, Jon Reyes. Ask the user which one.", said
+    assert asked == [] and scripts[-1][0] == apps.MESSAGES_PEOPLE, (asked, scripts)
+
+
+def test_a_number_said_another_way_finds_the_conversation_it_already_has(scripts: list) -> None:
+    asked = []
+    asyncio.run(apps.use("messages", {"action": "send", "to": "613-555-0144", "text": "hi"}, answering(True, asked)))
+    assert asked == ["Text +16135550144 saying: hi?"], asked
+    assert scripts[-1] == (apps.MESSAGES_TO_CHAT, "iMessage;-;+16135550144", "hi"), scripts
 
 
 def test_a_number_with_no_conversation_yet_starts_one(scripts: list) -> None:

@@ -2,6 +2,7 @@
 through AppleScript. Each takes a second or less where clicking through the app takes many steps, and works in every
 mode. Sending a message or an email asks the user first; nothing here deletes."""
 import asyncio
+import difflib
 import os
 import re
 import threading
@@ -21,6 +22,18 @@ NOTE_PREVIEW_CHARACTERS = 200
 SPOKEN_TEXT_CHARACTERS = 120  # how much of a message the confirmation question reads out
 DEFAULT_EVENT = timedelta(hours=1)
 SPOTIFY = "com.spotify.client"
+# Name matching for texts: a misheard or differently spelled name still finds the person, and the spoken confirmation
+# names who it found. Letters are grouped by how they sound; vowels and h, w, y carry no code.
+SOUNDS = {letter: str(group) for group, letters in enumerate(("bfpv", "cgjkqsxz", "dt", "l", "mn", "r"), 1)
+          for letter in letters}
+SOUND_LENGTH = 2  # shorter codes ("Al", "Ann") match too many names
+SAME_SOUND = 1.0  # as good as the exact spelling: speech cannot tell Jon from John, so neither may win on spelling
+PREFIX_LETTERS = 3
+PREFIX = 0.85  # "Kat" for Katelyn
+MATCH = 0.8
+TIE = 0.05  # names scoring this close to the best are too close to pick between
+MAX_NAMED = 4
+NUMBER_DIGITS = 10  # a number matches on its last ten digits, so "+1" and spacing do not matter
 HANDLE = re.compile(r"^(\+?[\d\s().-]{6,}|[^@\s]+@[^@\s]+\.[^@\s]+)$")  # a phone number or an email address
 # macOS kills a process that asks for Calendar or Reminders access unless the app it runs under declares why; the
 # Beacon app does and sets this, a terminal does not.
@@ -212,10 +225,10 @@ tell application "Contacts"
   return value of first email of item 1 of matches
 end tell
 end run'''
-# The one-to-one conversation whose person's name or handle contains `wanted`, as "chat id<TAB>name". Messages already
-# knows the names, so this needs no Contacts permission and texts the number the user already texts them on.
-MESSAGES_FIND = '''on run {wanted}
-tell application "Messages"
+# Every one-to-one conversation as "chat id<TAB>name<TAB>handle" lines. Messages already knows the names, so this needs
+# no Contacts permission and texts the number the user already texts them on.
+MESSAGES_PEOPLE = '''tell application "Messages"
+  set found to ""
   repeat with conversation in chats
     if (count of participants of conversation) is 1 then
       set person to item 1 of participants of conversation
@@ -224,15 +237,11 @@ tell application "Messages"
         set label to full name of person
       end try
       if label is missing value then set label to ""
-      if label contains wanted or handle of person contains wanted then
-        if label is "" then set label to handle of person
-        return (id of conversation) & tab & label
-      end if
+      set found to found & (id of conversation) & tab & label & tab & (handle of person) & linefeed
     end if
   end repeat
 end tell
-return ""
-end run'''
+return found'''
 MESSAGES_TO_CHAT = '''on run {conversation, message}
 tell application "Messages" to send message to chat id conversation
 end run'''
@@ -271,11 +280,54 @@ async def music(arguments: dict) -> str:
     return "Done."
 
 
+def sound(word: str) -> str:
+    """A spelling-blind code for how a word sounds, so Kaitlan, Katelyn and Caitlin all come out the same."""
+    codes = [SOUNDS[letter] for letter in word if letter in SOUNDS]
+    return "".join(code for index, code in enumerate(codes) if not index or code != codes[index - 1])
+
+
+def likeness(spoken: str, name: str) -> float:
+    if spoken == name:
+        return 1.0
+    if len(sound(spoken)) >= SOUND_LENGTH and sound(spoken) == sound(name):
+        return SAME_SOUND
+    if len(spoken) >= PREFIX_LETTERS and name.startswith(spoken):
+        return PREFIX
+    return difflib.SequenceMatcher(None, spoken, name).ratio()
+
+
+def score(spoken: str, name: str, handle: str) -> float:
+    """How well what the user said picks out this person: each spoken word against the closest word of their name."""
+    digits = re.sub(r"\D", "", spoken)
+    if len(digits) >= NUMBER_DIGITS and re.sub(r"\D", "", handle).endswith(digits[-NUMBER_DIGITS:]):
+        return 1.0
+    said, known = re.findall(r"[a-z]+", spoken.lower()), re.findall(r"[a-z]+", name.lower())
+    if not said or not known:
+        return 0.0
+    return sum(max(likeness(word, other) for other in known) for word in said) / len(said)
+
+
+async def conversation_with(to: str) -> tuple[str, str] | None:
+    """The chat id and name of the one person `to` sounds like, None when nobody does; asks back when several do."""
+    people = [line.split("\t") for line in (await osascript(MESSAGES_PEOPLE)).splitlines() if line.count("\t") == 2]
+    best: dict[str, tuple[float, str]] = {}  # by name, so one person's iMessage and SMS chats count once
+    for conversation, name, handle in people:
+        label = name or handle
+        if (match := score(to, name, handle)) >= MATCH and match > best.get(label, (0.0, ""))[0]:
+            best[label] = (match, conversation)
+    ranked = sorted(best.items(), key=lambda item: -item[1][0])
+    if not ranked:
+        return None
+    close = [label for label, (match, _) in ranked if match >= ranked[0][1][0] - TIE]
+    if len(close) > 1:
+        raise AppError(f"{to!r} could be {', '.join(close[:MAX_NAMED])}. Ask the user which one.")
+    return ranked[0][1][1], ranked[0][0]
+
+
 async def messages(arguments: dict, confirm: Confirm) -> str:
     to, text = str(arguments["to"]).strip(), str(arguments["text"])
-    found = await osascript(MESSAGES_FIND, to)
-    if found:
-        conversation, name = found.split("\t", 1)
+    if found := await conversation_with(to):
+        conversation, name = found
         script, target = MESSAGES_TO_CHAT, conversation
     elif HANDLE.match(to):
         script, target, name = MESSAGES_SEND, to, to  # someone new: a conversation starts
