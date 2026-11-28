@@ -78,9 +78,11 @@ enum Permission: CaseIterable, Identifiable {
                 openPrivacy("Privacy_Microphone")
             }
         case .accessibility:
+            forgetEarlierBuilds("Accessibility")
             AXIsProcessTrustedWithOptions([kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary)
             openPrivacy("Privacy_Accessibility")
         case .screen:
+            forgetEarlierBuilds("ScreenCapture")
             if !CGRequestScreenCaptureAccess() { openPrivacy("Privacy_ScreenCapture") }
         case .calendar:
             Task { await requestCalendar() }
@@ -106,6 +108,17 @@ enum Permission: CaseIterable, Identifiable {
         }
     }
 
+    /// An ad-hoc signed build is a new app to macOS, so a switch turned on for an earlier build stays on in System
+    /// Settings but does nothing. Clearing Beacon's own entries first makes the switch the user turns on this build's.
+    private func forgetEarlierBuilds(_ service: String) {
+        guard let bundle = Bundle.main.bundleIdentifier else { return }  // from a terminal the grant is the terminal's
+        let reset = Process()
+        reset.executableURL = URL(fileURLWithPath: "/usr/bin/tccutil")
+        reset.arguments = ["reset", service, bundle]
+        try? reset.run()
+        reset.waitUntilExit()
+    }
+
     private func openPrivacy(_ anchor: String) {
         NSWorkspace.shared.open(URL(string: privacyPane + anchor)!)
     }
@@ -114,6 +127,7 @@ enum Permission: CaseIterable, Identifiable {
 struct PermissionRow: View {
     let permission: Permission
     let granted: Bool
+    @State private var asked = false
 
     var body: some View {
         LabeledContent {
@@ -122,8 +136,14 @@ struct PermissionRow: View {
                     .foregroundStyle(.green)
                     .imageScale(.large)
                     .accessibilityLabel("Allowed")
+            } else if asked && permission == .screen && Bundle.main.bundleIdentifier != nil {
+                // macOS applies Screen Recording to a process only from its next launch
+                Button("Relaunch", action: relaunch)
             } else {
-                Button("Allow", action: permission.request)
+                Button("Allow") {
+                    permission.request()
+                    asked = true
+                }
             }
         } label: {
             Label {
@@ -280,6 +300,15 @@ final class HostedWindow: NSObject, NSWindowDelegate {
         window.delegate = nil
         window.contentViewController = nil
         closed()
+    }
+}
+
+/// Opens a fresh copy of Beacon and quits this one; Python stops when its pipe to this process closes.
+func relaunch() {
+    let fresh = NSWorkspace.OpenConfiguration()
+    fresh.createsNewApplicationInstance = true
+    NSWorkspace.shared.openApplication(at: Bundle.main.bundleURL, configuration: fresh) { _, _ in
+        DispatchQueue.main.async { NSApp.terminate(nil) }
     }
 }
 

@@ -60,7 +60,7 @@ SPOKEN_ERRORS: dict[type[Exception], str] = {  # most specific first
     BrowserStartError: "I couldn't open Chrome. The reason is in the terminal.",
     BrowserLostError: "The browser stopped responding, so I stopped and restarted it.",
     MCPError: "The browser stopped responding, so I stopped.",
-    MacPermissionError: "I need permission to see and control the screen. The steps are in the terminal.",
+    MacPermissionError: "I need permission to see and control the screen. Allow it in my Settings, under Permissions.",
     MicrophoneSilentError: NO_MICROPHONE,
     sounddevice.PortAudioError: NO_MICROPHONE,
 }

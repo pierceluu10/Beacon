@@ -1,6 +1,7 @@
 """Claude operating the whole Mac: it sees the screen and moves the real mouse and keyboard (Anthropic's computer toolset)."""
 import asyncio
 import base64
+import os
 import tempfile
 from datetime import datetime
 from pathlib import Path
@@ -50,8 +51,8 @@ KEY_CODES = {  # macOS virtual key codes on the ANSI layout, by the lower-case n
     "delete": 117, "home": 115, "end": 119, "page_up": 116, "pageup": 116, "prior": 116, "page_down": 121,
     "pagedown": 121, "next": 121, "left": 123, "right": 124, "down": 125, "up": 126, "f1": 122, "f2": 120, "f3": 99,
     "f4": 118, "f5": 96, "f6": 97, "f7": 98, "f8": 100, "f9": 101, "f10": 109, "f11": 103, "f12": 111}
-NO_PERMISSION = ("macOS is not letting this terminal {missing}. Allow it in System Settings, Privacy and Security, "
-                 "then quit and reopen the terminal and start Beacon again.")
+NO_PERMISSION = ("macOS is not letting {who} {missing}. Allow it in System Settings, Privacy and Security, "
+                 "then {restart}.")
 
 
 class MacPermissionError(Exception):
@@ -193,7 +194,10 @@ def check_permissions() -> None:
     if not AXIsProcessTrustedWithOptions({kAXTrustedCheckOptionPrompt: True}):
         missing.append("control the mouse and keyboard (Accessibility)")
     if missing:
-        raise MacPermissionError(NO_PERMISSION.format(missing=" or ".join(missing)))
+        in_app = bool(os.environ.get(apps.IN_APP))
+        raise MacPermissionError(NO_PERMISSION.format(
+            who="Beacon" if in_app else "this terminal", missing=" or ".join(missing),
+            restart="relaunch Beacon" if in_app else "quit and reopen the terminal and start Beacon again"))
 
 
 class MacAgent(Conversation):
