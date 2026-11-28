@@ -1,7 +1,6 @@
 // First-launch permission onboarding and the Settings window, in SwiftUI hosted by AppKit windows.
 // main.swift owns the top-level code and calls showOnboarding, showSettings and settingsModel.
 import AVFoundation
-import EventKit
 import ScreenCaptureKit
 import ServiceManagement
 import SwiftUI
@@ -23,21 +22,16 @@ final class SettingsModel: ObservableObject {
 let settingsModel = SettingsModel()
 
 enum Permission: CaseIterable, Identifiable {
-    case microphone, accessibility, screen, calendar
+    case microphone, accessibility, screen
 
     var id: Self { self }
 
-    /// EventKit aborts a process that asks for access outside an app bundle, so Calendar is only offered in Beacon.app.
-    static func needed(bundled: Bool) -> [Permission] { bundled ? allCases : allCases.filter(\.required) }
-
-    var required: Bool { self != .calendar }
 
     var name: String {
         switch self {
         case .microphone: "Microphone"
         case .accessibility: "Accessibility"
         case .screen: "Screen Recording"
-        case .calendar: "Calendar & Reminders"
         }
     }
 
@@ -46,7 +40,6 @@ enum Permission: CaseIterable, Identifiable {
         case .microphone: "Hears you when you talk to it."
         case .accessibility: "Clicks, types and presses keys for you."
         case .screen: "Sees the screen to know what to do."
-        case .calendar: "Optional. Reads and adds events and reminders."
         }
     }
 
@@ -55,7 +48,6 @@ enum Permission: CaseIterable, Identifiable {
         case .microphone: "mic"
         case .accessibility: "accessibility"
         case .screen: "rectangle.dashed.badge.record"
-        case .calendar: "calendar"
         }
     }
 
@@ -64,9 +56,6 @@ enum Permission: CaseIterable, Identifiable {
         case .microphone: AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
         case .accessibility: AXIsProcessTrusted()
         case .screen: CGPreflightScreenCaptureAccess()
-        case .calendar:
-            EKEventStore.authorizationStatus(for: .event) == .fullAccess
-                && EKEventStore.authorizationStatus(for: .reminder) == .fullAccess
         }
     }
 
@@ -88,27 +77,6 @@ enum Permission: CaseIterable, Identifiable {
             // CGRequestScreenCaptureAccess asks only once per app, so after the reset it may add nothing; trying to list
             // the screen's content always puts Beacon in the list and shows macOS's prompt, which opens the right page.
             Task { _ = try? await SCShareableContent.current }
-        case .calendar:
-            Task { await requestCalendar() }
-        }
-    }
-
-    /// A denied request returns at once without asking again, so that case goes to System Settings instead.
-    private func requestCalendar() async {
-        let store = EKEventStore()
-        do {
-            switch EKEventStore.authorizationStatus(for: .event) {
-            case .notDetermined: _ = try await store.requestFullAccessToEvents()
-            case .fullAccess: break
-            default: return openPrivacy("Privacy_Calendars")
-            }
-            switch EKEventStore.authorizationStatus(for: .reminder) {
-            case .notDetermined: _ = try await store.requestFullAccessToReminders()
-            case .fullAccess: break
-            default: openPrivacy("Privacy_Reminders")
-            }
-        } catch {
-            FileHandle.standardError.write(Data("Could not ask for Calendar and Reminders access: \(error)\n".utf8))
         }
     }
 
@@ -247,7 +215,7 @@ struct SettingsView: View {
                     Text("Who you are, how Beacon should work, and files it can attach.")
                 }
             }
-            PermissionsSection(permissions: Permission.needed(bundled: bundled), granted: $granted, title: "Permissions")
+            PermissionsSection(permissions: Permission.allCases, granted: $granted, title: "Permissions")
         }
         .formStyle(.grouped)
         .scrollDisabled(true)
@@ -313,11 +281,11 @@ var askedForScreen = false
 var onboardingWindow: HostedWindow?
 var settingsWindow: HostedWindow?
 
-/// Shows the onboarding window when a required permission is missing and calls `done` when the user finishes it;
-/// calls `done` at once when everything required is already granted. `bundled` is true inside Beacon.app.
+/// Shows the onboarding window when a permission is missing and calls `done` when the user finishes it;
+/// calls `done` at once when everything is already granted. `bundled` is true inside Beacon.app.
 func showOnboarding(bundled: Bool, done: @escaping () -> Void) {
-    let permissions = Permission.needed(bundled: bundled)
-    if permissions.filter(\.required).allSatisfy(\.granted) { return done() }
+    let permissions = Permission.allCases
+    if permissions.allSatisfy(\.granted) { return done() }
     let view = OnboardingView(permissions: permissions) {
         // macOS applies Screen Recording from the app's next launch, so Continue relaunches once instead of starting
         if bundled && askedForScreen && !Permission.screen.granted { return relaunch() }
