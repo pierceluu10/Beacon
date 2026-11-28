@@ -2,6 +2,7 @@
 quit. A native helper (app/) shows it and holds the key; this file runs the assistant on a second thread, acts on
 what the helper reports, and keeps the menu's choices in settings.json."""
 import asyncio
+import contextlib
 import json
 import os
 import queue
@@ -55,7 +56,11 @@ def connect_helper() -> subprocess.Popen | SimpleNamespace:
         return start_helper()
     channel = os.fdopen(os.dup(sys.stdout.fileno()), "w")
     os.dup2(sys.stderr.fileno(), sys.stdout.fileno())
-    return SimpleNamespace(stdin=channel, stdout=sys.stdin, terminate=channel.close)
+    def close() -> None:
+        with contextlib.suppress(BrokenPipeError):  # the app quit first
+            channel.close()
+
+    return SimpleNamespace(stdin=channel, stdout=sys.stdin, terminate=close)
 
 
 class Beacon:

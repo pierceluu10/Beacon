@@ -270,6 +270,7 @@ final class HostedWindow: NSObject, NSWindowDelegate {
 
 /// Opens a fresh copy of Beacon and quits this one; Python stops when its pipe to this process closes.
 func relaunch() {
+    quitting = true
     let fresh = NSWorkspace.OpenConfiguration()
     fresh.createsNewApplicationInstance = true
     NSWorkspace.shared.openApplication(at: Bundle.main.bundleURL, configuration: fresh) { _, _ in

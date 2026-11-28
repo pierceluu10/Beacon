@@ -46,6 +46,8 @@ let escapeKey: UInt16 = 53
 
 let bundled = Bundle.main.bundleIdentifier != nil
 var beacon = FileHandle.standardOutput  // where events go: Python's stdin
+var started = false  // inside the app, Python runs only after onboarding
+var quitting = false  // a quit Beacon chose; any other, like System Settings' Quit & Reopen, opens it again
 
 func send(_ message: [String: Any]) {
     let data = try! JSONSerialization.data(withJSONObject: message)
@@ -118,7 +120,12 @@ final class Menu: NSObject {
     }
 
     @objc func clicked(_ sender: NSMenuItem) {
-        send(["action": sender.representedObject as! String])
+        let action = sender.representedObject as! String
+        if action == "quit" && bundled && !started {  // nobody to tell yet: quit straight away
+            quitting = true
+            return NSApp.terminate(nil)
+        }
+        send(["action": action])
     }
 
     /// The state to show: the key being held shows the microphone at once, before Beacon reports it.
@@ -493,7 +500,12 @@ func startBeacon() {
     python.standardInput = events
     python.standardOutput = statuses
     python.standardError = try? FileHandle(forWritingTo: log)
-    python.terminationHandler = { _ in DispatchQueue.main.async { NSApp.terminate(nil) } }
+    python.terminationHandler = { _ in
+        DispatchQueue.main.async {
+            quitting = true
+            NSApp.terminate(nil)
+        }
+    }
     do {
         try python.run()
     } catch {
@@ -501,10 +513,19 @@ func startBeacon() {
         exit(1)
     }
     beacon = events.fileHandleForWriting
+    started = true
     listen(to: statuses.fileHandleForReading)
 }
 
 if bundled {
+    // System Settings quits Beacon to apply Screen Recording but does not always open it again, so Beacon does.
+    NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: nil) { _ in
+        guard !quitting else { return }
+        let reopen = Process()
+        reopen.executableURL = URL(fileURLWithPath: "/bin/sh")
+        reopen.arguments = ["-c", "sleep 1; /usr/bin/open \"$0\"", Bundle.main.bundlePath]  // once this copy has exited
+        try? reopen.run()
+    }
     showOnboarding(bundled: true) { startBeacon() }
 } else {
     listen(to: FileHandle.standardInput)
