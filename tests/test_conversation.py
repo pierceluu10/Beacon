@@ -7,6 +7,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -465,3 +466,38 @@ def test_in_the_app_only_status_lines_reach_the_app_and_stray_prints_go_to_the_l
     print(ran)
     assert ran.stdout == '{"state": "ready"}\n', ran.stdout
     assert ran.stderr.split() == ["stray", '{"action":', '"wake"}'], ran.stderr
+
+
+def test_cutting_a_line_off_never_closes_the_speakers_while_a_write_is_under_way(
+        monkeypatch: pytest.MonkeyPatch, voice_cache: Path) -> None:
+    """Closing a CoreAudio stream mid-write segfaulted Beacon right after "On it."."""
+    events = []
+
+    class SlowSpeakers:
+        def __init__(self, **settings: object) -> None: pass
+        def start(self) -> None: pass
+
+        def write(self, audio: bytes) -> None:
+            events.append("write")
+            time.sleep(len(audio) / (mouth.OUTPUT_RATE * mouth.SAMPLE_BYTES))  # a real write lasts as long as its audio
+            events.append("written")
+
+        def stop(self) -> None: pass
+        def abort(self) -> None: events.append("abort")
+        def close(self) -> None: events.append("close")
+
+    monkeypatch.setattr(mouth.sounddevice, "RawOutputStream", SlowSpeakers)
+    mouth.keep_clip(mouth.clip_path("On it."), bytes(mouth.WRITE_BYTES * 20))  # a second of audio, played from the cache
+
+    async def scenario() -> float:
+        speaking = asyncio.create_task(stream(lambda request: httpx2.Response(500)).speak("On it."))
+        await asyncio.sleep(0.05)
+        started = time.perf_counter()
+        speaking.cancel()
+        await asyncio.wait({speaking})
+        return time.perf_counter() - started
+
+    took = asyncio.run(scenario())
+    print(events, took)
+    assert events[-3:] == ["written", "abort", "close"] and events.count("write") == events.count("written"), events
+    assert took < 0.1, f"the cut-off took {took:.2f} s"

@@ -32,6 +32,8 @@ SAMPLE_BYTES = 2
 # Stopping the stream right after the last sample makes the speakers crackle; measured on a MacBook Pro, 0.25 s of
 # silence first still crackled sometimes, 0.5 s never did.
 QUIET_TAIL = bytes(OUTPUT_RATE // 2 * SAMPLE_BYTES)
+# Audio goes to the speakers in pieces this long, so a cut-off waits at most this for the piece being written.
+WRITE_BYTES = OUTPUT_RATE // 20 * SAMPLE_BYTES
 SPEECH_TIMEOUT = httpx2.Timeout(10, connect=5)
 # How everything Beacon says should sound; every prompt that writes words to be spoken includes it.
 SPEAKING_STYLE = ("Sound like a relaxed, friendly friend helping out, not an assistant reading a script: everyday words, "
@@ -139,6 +141,13 @@ class Mouth:
     async def _play(self, text: str, fields: dict) -> None:
         start = time.perf_counter()
         speakers = None
+        busy: asyncio.Future | None = None  # the speakers call running on a worker thread
+
+        async def call(method, *arguments) -> None:
+            nonlocal busy
+            busy = asyncio.ensure_future(asyncio.to_thread(method, *arguments))
+            await asyncio.shield(busy)  # a cancel must not abandon the thread while it still uses the stream
+
         try:
             async with contextlib.aclosing(self._audio(text)) as audio:
                 async for samples in audio:
@@ -146,11 +155,14 @@ class Mouth:
                         fields["first_audio"] = round(time.perf_counter() - start, 3)
                         speakers = sounddevice.RawOutputStream(samplerate=OUTPUT_RATE, channels=1, dtype="int16")
                         speakers.start()
-                    await asyncio.to_thread(speakers.write, samples)
+                    for piece in range(0, len(samples), WRITE_BYTES):
+                        await call(speakers.write, samples[piece:piece + WRITE_BYTES])
             if speakers:
-                await asyncio.to_thread(speakers.write, QUIET_TAIL)
-                await asyncio.to_thread(speakers.stop)  # returns once the last of it has been played
+                await call(speakers.write, QUIET_TAIL)
+                await call(speakers.stop)  # returns once the last of it has been played
         finally:
+            if busy:  # closing the stream while a write is under way crashes inside CoreAudio
+                await asyncio.wait({busy})
             if speakers:
                 speakers.abort()  # cut off at once when cancelled; a no-op after stop
                 speakers.close()
